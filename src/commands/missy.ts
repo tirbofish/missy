@@ -15,23 +15,38 @@ import {
 import {
   appendConversationTurn,
   clearConversationContext,
+  getConversationClearPoint,
   getConversationContext,
 } from "../context.ts";
+import { shouldUsePriorConversation } from "../contextIntent.ts";
 import { getInteractionConversationId } from "../conversation.ts";
 import {
   buildInteractionHistoryContext,
   maxDiscordHistoryLimit,
+  shouldLookPastClearPoint,
 } from "../history.ts";
+import { actorFromInteraction } from "../discordActor.ts";
+import { canAccessLocalComputer } from "../localAccess.ts";
 import {
   editReplyWithDiscordMessages,
   requestInteractionFileOperationApproval,
 } from "../discord.ts";
 import { buildHelpMessage } from "../help.ts";
-import {
-  MistralApiError,
-  sendMistralMessage,
-} from "../mistral.ts";
+import { MistralApiError, sendMistralMessage } from "../mistral.ts";
 import { addMcpServer, McpServerConfig } from "../mcp.ts";
+import {
+  clearUserModel,
+  defaultMistralModel,
+  getEffectiveModel,
+  getUserModel,
+  parseModelCandidate,
+  setUserModel,
+} from "../models.ts";
+import {
+  canShutdownBot,
+  SHUTDOWN_REQUIRED_MESSAGE,
+  shutdownBot,
+} from "../shutdown.ts";
 
 const NO_API_KEY_MESSAGE =
   "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
@@ -81,6 +96,39 @@ function parseOptionalStringRecord(
 
 @Discord()
 export class MissyCommands {
+  private async runShutdownCommand(
+    interaction: CommandInteraction,
+    commandName: string,
+  ): Promise<void> {
+    const actor = actorFromInteraction(interaction);
+
+    if (!canShutdownBot(actor)) {
+      await interaction.reply({
+        content: SHUTDOWN_REQUIRED_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    console.warn(JSON.stringify({
+      at: new Date().toISOString(),
+      channelId: interaction.channelId,
+      commandName,
+      event: "shutdown_command",
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+      username: interaction.user.tag,
+      roleIds: actor.roleIds,
+    }));
+    await interaction.reply({
+      content: "Shutting down Missy now.",
+      ephemeral: true,
+    });
+    shutdownBot(
+      `Discord slash command ${commandName} by ${interaction.user.id}`,
+    );
+  }
+
   @Slash({
     contexts: COMMAND_CONTEXTS,
     description: "Save your Mistral API key",
@@ -140,7 +188,11 @@ export class MissyCommands {
 
     try {
       const conversationId = getInteractionConversationId(interaction);
-      const context = await getConversationContext(conversationId);
+      const actor = actorFromInteraction(interaction);
+      const context = shouldUsePriorConversation(message)
+        ? await getConversationContext(conversationId)
+        : [];
+      const model = await getEffectiveModel(interaction.user.id);
       const reply = await sendMistralMessage(apiKey, {
         message,
         source: "discord-slash",
@@ -149,10 +201,12 @@ export class MissyCommands {
           username: interaction.user.tag,
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
+          roleIds: actor.roleIds,
         },
       }, {
         context,
-        requestFileOperationApproval: !interaction.guildId
+        model,
+        requestFileOperationApproval: canAccessLocalComputer(actor)
           ? (request) =>
             requestInteractionFileOperationApproval(interaction, request)
           : undefined,
@@ -206,9 +260,16 @@ export class MissyCommands {
     await interaction.deferReply({ ephemeral: true });
 
     try {
+      const conversationId = getInteractionConversationId(interaction);
+      const clearPoint = shouldLookPastClearPoint(question ?? "")
+        ? undefined
+        : await getConversationClearPoint(conversationId);
       const discordHistory = await buildInteractionHistoryContext(
         interaction.channel,
-        limit,
+        {
+          after: clearPoint?.createdAt,
+          limit,
+        },
       );
 
       if (!discordHistory) {
@@ -220,8 +281,8 @@ export class MissyCommands {
 
       const prompt = question?.trim() ||
         "Analyze this Discord message history. Summarize the main topics, decisions, open questions, and any useful next steps.";
-      const conversationId = getInteractionConversationId(interaction);
       const context = await getConversationContext(conversationId);
+      const model = await getEffectiveModel(interaction.user.id);
       const reply = await sendMistralMessage(apiKey, {
         message: prompt,
         source: "discord-slash",
@@ -230,10 +291,12 @@ export class MissyCommands {
           username: interaction.user.tag,
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
+          roleIds: actorFromInteraction(interaction).roleIds,
         },
       }, {
         context,
         discordHistory,
+        model,
       });
 
       await appendConversationTurn(conversationId, prompt, reply);
@@ -260,14 +323,16 @@ export class MissyCommands {
     name: "clear",
   })
   async clear(interaction: CommandInteraction): Promise<void> {
-    const cleared = await clearConversationContext(
+    await clearConversationContext(
       getInteractionConversationId(interaction),
+      {
+        createdAt: new Date(interaction.createdTimestamp),
+        messageId: interaction.id,
+      },
     );
 
     await interaction.reply({
-      content: cleared
-        ? "Cleared this conversation context."
-        : "There was no saved context for this conversation.",
+      content: "Cleared this conversation context.",
       ephemeral: true,
     });
   }
@@ -278,10 +343,77 @@ export class MissyCommands {
     name: "help",
   })
   async help(interaction: CommandInteraction): Promise<void> {
+    const actor = actorFromInteraction(interaction);
+
     await interaction.reply({
-      content: buildHelpMessage(!interaction.guildId),
+      content: buildHelpMessage(canAccessLocalComputer(actor)),
       ephemeral: true,
     });
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "View or change your Mistral model",
+    name: "model",
+  })
+  async model(
+    @SlashOption({
+      description: "Model name, or default/reset to use MISTRAL_MODEL",
+      name: "model",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) model: string | undefined,
+    interaction: CommandInteraction,
+  ): Promise<void> {
+    const requestedModel = model?.trim();
+
+    if (!requestedModel) {
+      const userModel = await getUserModel(interaction.user.id);
+      const effectiveModel = userModel ?? defaultMistralModel();
+      const source = userModel ? "your override" : "the default";
+
+      await interaction.reply({
+        content: `Current model: \`${effectiveModel}\` from ${source}.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (/^(default|reset|clear)$/i.test(requestedModel)) {
+      await clearUserModel(interaction.user.id);
+      await interaction.reply({
+        content:
+          `Cleared your model override. Current model: \`${defaultMistralModel()}\`.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const parsedModel = parseModelCandidate(requestedModel);
+
+    if (!parsedModel) {
+      await interaction.reply({
+        content:
+          "Model names must be 1-128 characters and use only letters, numbers, dots, underscores, colons, slashes, or hyphens.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await setUserModel(interaction.user.id, parsedModel);
+    await interaction.reply({
+      content: `Using model \`${parsedModel}\` for your Missy requests.`,
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "Stop Missy's running process",
+    name: "shutdown",
+  })
+  async shutdown(interaction: CommandInteraction): Promise<void> {
+    await this.runShutdownCommand(interaction, "/shutdown");
   }
 
   @Slash({
@@ -317,7 +449,7 @@ export class MissyCommands {
     }) envJson: string | undefined,
     interaction: CommandInteraction,
   ): Promise<void> {
-    if (!canManageMcp(interaction.user.id)) {
+    if (!canManageMcp(actorFromInteraction(interaction))) {
       await interaction.reply({
         content: MCP_ADMIN_REQUIRED_MESSAGE,
         ephemeral: true,

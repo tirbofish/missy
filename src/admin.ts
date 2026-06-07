@@ -1,11 +1,15 @@
-export function canManageMcp(userId: string): boolean {
-  const configuredIds = (Deno.env.get("MCP_ADMIN_USER_IDS") ?? "")
-    .split(/[,\s]+/)
-    .map((id) => id.trim())
-    .filter(Boolean);
+import { hasConfiguredPermission, PermissionActor } from "./permissions.ts";
 
-  return configuredIds.includes(userId);
+const MCP_ADMIN_USER_IDS_ENV = "MCP_ADMIN_USER_IDS";
+const MCP_ADMIN_ROLE_IDS_ENV = "MCP_ADMIN_ROLE_IDS";
+
+export function canManageMcp(actor: PermissionActor): boolean {
+  return hasConfiguredPermission(
+    actor,
+    MCP_ADMIN_USER_IDS_ENV,
+    MCP_ADMIN_ROLE_IDS_ENV,
+  );
 }
 
 export const MCP_ADMIN_REQUIRED_MESSAGE =
-  "Only configured MCP admins can do that. Set MCP_ADMIN_USER_IDS in .env to a comma-separated list of Discord user IDs.";
+  `Only configured MCP admins can do that. Set ${MCP_ADMIN_USER_IDS_ENV} or ${MCP_ADMIN_ROLE_IDS_ENV} in .env.`;

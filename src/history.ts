@@ -13,6 +13,11 @@ type HistoryChannel = {
   messages: FetchableMessages;
 };
 
+export type HistoryContextOptions = {
+  after?: Date;
+  limit?: number;
+};
+
 function getConfiguredDefaultLimit(): number {
   const rawLimit = Number(Deno.env.get("DISCORD_CONTEXT_MESSAGES"));
 
@@ -54,18 +59,23 @@ function formatMessage(message: Message): string {
 
 export async function buildDiscordHistoryContext(
   message: Message,
-  limit?: number,
+  options: HistoryContextOptions = {},
 ): Promise<string | undefined> {
   if (!canFetchHistory(message.channel)) {
     return undefined;
   }
 
   const messages = await message.channel.messages.fetch({
-    limit: clampLimit(limit),
+    limit: clampLimit(options.limit),
     before: message.id,
   });
+  const afterTimestamp = options.after?.getTime();
 
   const formatted = [...messages.values()]
+    .filter((candidate) =>
+      afterTimestamp === undefined ||
+      candidate.createdTimestamp > afterTimestamp
+    )
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
     .map(formatMessage)
     .join("\n");
@@ -79,14 +89,21 @@ export async function buildDiscordHistoryContext(
 
 export async function buildInteractionHistoryContext(
   channel: unknown,
-  limit?: number,
+  options: HistoryContextOptions = {},
 ): Promise<string | undefined> {
   if (!canFetchHistory(channel)) {
     return undefined;
   }
 
-  const messages = await channel.messages.fetch({ limit: clampLimit(limit) });
+  const messages = await channel.messages.fetch({
+    limit: clampLimit(options.limit),
+  });
+  const afterTimestamp = options.after?.getTime();
   const formatted = [...messages.values()]
+    .filter((candidate) =>
+      afterTimestamp === undefined ||
+      candidate.createdTimestamp > afterTimestamp
+    )
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
     .map(formatMessage)
     .join("\n");
@@ -100,4 +117,8 @@ export async function buildInteractionHistoryContext(
 
 export function maxDiscordHistoryLimit(): number {
   return MAX_HISTORY_LIMIT;
+}
+
+export function shouldLookPastClearPoint(content: string): boolean {
+  return /\blook\s+past\s+(your|the)\s+clear\s+point\b/i.test(content);
 }

@@ -3,7 +3,14 @@ export type ConversationMessage = {
   content: string;
 };
 
+export type ConversationClearPoint = {
+  createdAt: Date;
+  messageId?: string;
+};
+
 type StoredConversation = {
+  clearedAt?: string;
+  clearMessageId?: string;
   messages: ConversationMessage[];
   updatedAt: string;
 };
@@ -54,15 +61,34 @@ export async function getConversationContext(
   return store.conversations[conversationId]?.messages ?? [];
 }
 
+export async function getConversationClearPoint(
+  conversationId: string,
+): Promise<ConversationClearPoint | undefined> {
+  const store = await loadStore();
+  const conversation = store.conversations[conversationId];
+
+  if (!conversation?.clearedAt) {
+    return undefined;
+  }
+
+  return {
+    createdAt: new Date(conversation.clearedAt),
+    messageId: conversation.clearMessageId,
+  };
+}
+
 export async function appendConversationTurn(
   conversationId: string,
   userMessage: string,
   assistantMessage: string,
 ): Promise<void> {
   const store = await loadStore();
-  const existing = store.conversations[conversationId]?.messages ?? [];
+  const existingConversation = store.conversations[conversationId];
+  const existing = existingConversation?.messages ?? [];
 
   store.conversations[conversationId] = {
+    clearedAt: existingConversation?.clearedAt,
+    clearMessageId: existingConversation?.clearMessageId,
     messages: trimContext([
       ...existing,
       { role: "user", content: userMessage },
@@ -76,14 +102,19 @@ export async function appendConversationTurn(
 
 export async function clearConversationContext(
   conversationId: string,
+  clearPoint?: ConversationClearPoint,
 ): Promise<boolean> {
   const store = await loadStore();
+  const existingConversation = store.conversations[conversationId];
+  const hadContext = Boolean(existingConversation?.messages.length);
+  const now = new Date();
 
-  if (!store.conversations[conversationId]) {
-    return false;
-  }
-
-  delete store.conversations[conversationId];
+  store.conversations[conversationId] = {
+    clearedAt: (clearPoint?.createdAt ?? now).toISOString(),
+    clearMessageId: clearPoint?.messageId,
+    messages: [],
+    updatedAt: now.toISOString(),
+  };
   await saveStore(store);
-  return true;
+  return hadContext;
 }

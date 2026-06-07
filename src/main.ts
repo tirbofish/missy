@@ -13,6 +13,7 @@ export class Main {
       .split(/[,\s]+/)
       .map((guildId) => guildId.trim())
       .filter(Boolean);
+    const registerGlobalCommands = shouldRegisterGlobalCommands(botGuilds);
 
     Main.client = new Client({
       botGuilds,
@@ -47,7 +48,7 @@ export class Main {
     Main.client.once(Events.ClientReady, async () => {
       await Main.client.initApplicationCommands();
 
-      if (botGuilds.length) {
+      if (botGuilds.length && registerGlobalCommands) {
         const guildScopedBotGuilds = Main.client.botGuilds;
         Main.client.botGuilds = [];
 
@@ -56,11 +57,19 @@ export class Main {
         } finally {
           Main.client.botGuilds = guildScopedBotGuilds;
         }
+      } else if (botGuilds.length) {
+        await Main.client.application?.commands.set([]);
       }
 
       console.log(
         botGuilds.length
-          ? `Bot started with guild-scoped commands for ${botGuilds.join(", ")} and global commands for DMs`
+          ? `Bot started with guild-scoped commands for ${
+            botGuilds.join(", ")
+          }${
+            registerGlobalCommands
+              ? " and global commands"
+              : " and no global commands"
+          }`
           : "Bot started with global commands",
       );
     });
@@ -76,6 +85,16 @@ export class Main {
     }
     await Main.client.login(process.env.BOT_TOKEN);
   }
+}
+
+function shouldRegisterGlobalCommands(botGuilds: string[]): boolean {
+  if (botGuilds.length === 0) {
+    return true;
+  }
+
+  return /^(1|true|yes)$/i.test(
+    process.env.DISCORD_REGISTER_GLOBAL_COMMANDS?.trim() ?? "",
+  );
 }
 
 void Main.start();

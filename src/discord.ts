@@ -62,12 +62,14 @@ function buildApprovalComponents(approveId: string, denyId: string) {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(approveId)
+        .setEmoji("✅")
         .setLabel("Approve")
-        .setStyle(ButtonStyle.Danger),
+        .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(denyId)
+        .setEmoji("❌")
         .setLabel("Deny")
-        .setStyle(ButtonStyle.Secondary),
+        .setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -75,6 +77,15 @@ function buildApprovalComponents(approveId: string, denyId: string) {
 function buildOperationApprovalMessage(
   request: FileOperationApprovalRequest,
 ): string {
+  if (request.action === "copy") {
+    return [
+      "Approve copying this local path?",
+      "",
+      `From: \`${formatPath(request.sourcePath ?? "")}\``,
+      `To: \`${formatPath(request.destinationPath ?? "")}\``,
+    ].join("\n");
+  }
+
   if (request.action === "move") {
     return [
       `Approve moving this ${request.subject}?`,
@@ -94,11 +105,76 @@ function buildOperationApprovalMessage(
     ].join("\n");
   }
 
+  if (request.action === "list") {
+    return [
+      "Approve listing this local folder?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
+    ].join("\n");
+  }
+
+  if (request.action === "read") {
+    return [
+      "Approve reading this local file?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
+    ].join("\n");
+  }
+
+  if (request.action === "stat") {
+    return [
+      "Approve inspecting this local path?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
+    ].join("\n");
+  }
+
+  if (request.action === "mkdir") {
+    return [
+      "Approve creating this local folder?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
+    ].join("\n");
+  }
+
+  if (request.action === "write") {
+    return [
+      "Approve writing this local file?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
+    ].join("\n");
+  }
+
   return [
     `Approve overwriting this ${request.subject}?`,
     "",
     `Path: \`${formatPath(request.targetPath ?? "")}\``,
   ].join("\n");
+}
+
+function logFilesystemAccess(
+  event: "requested" | "approved" | "denied" | "timed_out",
+  actor: {
+    channelId?: string;
+    guildId?: string | null;
+    userId: string;
+    username?: string;
+  },
+  request: FileOperationApprovalRequest,
+): void {
+  console.info(JSON.stringify({
+    action: request.action,
+    at: new Date().toISOString(),
+    channelId: actor.channelId,
+    destinationPath: request.destinationPath,
+    event: `filesystem_${event}`,
+    guildId: actor.guildId,
+    sourcePath: request.sourcePath,
+    subject: request.subject,
+    targetPath: request.targetPath,
+    userId: actor.userId,
+    username: actor.username,
+  }));
 }
 
 export async function sendTyping(message: Message): Promise<void> {
@@ -175,9 +251,16 @@ export async function requestMessageFileOperationApproval(
   message: Message,
   request: FileOperationApprovalRequest,
 ): Promise<boolean> {
+  const actor = {
+    channelId: message.channelId,
+    guildId: message.guildId,
+    userId: message.author.id,
+    username: message.author.tag,
+  };
   const nonce = crypto.randomUUID();
   const approveId = `file-approve:${nonce}`;
   const denyId = `file-deny:${nonce}`;
+  logFilesystemAccess("requested", actor, request);
   const approvalMessage = await message.reply({
     components: buildApprovalComponents(approveId, denyId),
     content: buildOperationApprovalMessage(request),
@@ -192,6 +275,7 @@ export async function requestMessageFileOperationApproval(
       time: 60_000,
     });
     const approved = interaction.customId === approveId;
+    logFilesystemAccess(approved ? "approved" : "denied", actor, request);
 
     await interaction.update({
       components: [],
@@ -202,6 +286,7 @@ export async function requestMessageFileOperationApproval(
 
     return approved;
   } catch {
+    logFilesystemAccess("timed_out", actor, request);
     await approvalMessage.edit({
       components: [],
       content: `Filesystem ${request.action} approval timed out.`,
@@ -214,9 +299,16 @@ export async function requestInteractionFileOperationApproval(
   interaction: CommandInteraction,
   request: FileOperationApprovalRequest,
 ): Promise<boolean> {
+  const actor = {
+    channelId: interaction.channelId,
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    username: interaction.user.tag,
+  };
   const nonce = crypto.randomUUID();
   const approveId = `file-approve:${nonce}`;
   const denyId = `file-deny:${nonce}`;
+  logFilesystemAccess("requested", actor, request);
   const approvalMessage = await interaction.followUp({
     components: buildApprovalComponents(approveId, denyId),
     content: buildOperationApprovalMessage(request),
@@ -234,6 +326,7 @@ export async function requestInteractionFileOperationApproval(
       time: 60_000,
     });
     const approved = componentInteraction.customId === approveId;
+    logFilesystemAccess(approved ? "approved" : "denied", actor, request);
 
     await componentInteraction.update({
       components: [],
@@ -244,6 +337,7 @@ export async function requestInteractionFileOperationApproval(
 
     return approved;
   } catch {
+    logFilesystemAccess("timed_out", actor, request);
     await approvalMessage.edit({
       components: [],
       content: `Filesystem ${request.action} approval timed out.`,

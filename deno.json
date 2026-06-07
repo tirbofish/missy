@@ -1,7 +1,7 @@
 {
   "tasks": {
     "dev": "deno run -E -R --allow-write --allow-run -N --env-file=.env --watch src/main.ts",
-    "check": "deno check --allow-import src/main.ts src/commands/missy.ts scripts/commands.ts scripts/mcp/agent-sdk-google-computer.ts",
+    "check": "deno check --allow-import src/main.ts src/commands/missy.ts src/contextIntent_test.ts src/permissions_test.ts scripts/commands.ts scripts/mcp/agent-sdk-google-computer.ts",
     "commands:clear-global": "deno run -E -N --env-file=.env scripts/commands.ts clear-global",
     "commands:clear-guilds": "deno run -E -N --env-file=.env scripts/commands.ts clear-guilds",
     "commands:clear-all": "deno run -E -N --env-file=.env scripts/commands.ts clear-all",

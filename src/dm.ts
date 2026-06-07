@@ -10,29 +10,73 @@ import {
   clearConversationContext,
   getConversationContext,
 } from "./context.ts";
+import { shouldUsePriorConversation } from "./contextIntent.ts";
 import { getMessageConversationId } from "./conversation.ts";
+import { actorFromMessage } from "./discordActor.ts";
 import {
   replyWithDiscordMessages,
   requestMessageFileOperationApproval,
   sendTyping,
 } from "./discord.ts";
-import { buildHelpMessage, isHelpCommand } from "./help.ts";
-import { buildMessageContent } from "./messageContent.ts";
 import {
-  MistralApiError,
-  sendMistralMessage,
-} from "./mistral.ts";
+  buildHelpMessage,
+  isHelpCommand,
+  isSystemPromptRequest,
+  SYSTEM_PROMPT_DENIAL_MESSAGE,
+} from "./help.ts";
+import { canAccessLocalComputer } from "./localAccess.ts";
+import { buildMessageContent } from "./messageContent.ts";
+import { MistralApiError, sendMistralMessage } from "./mistral.ts";
+import { getEffectiveModel } from "./models.ts";
+import {
+  canShutdownBot,
+  SHUTDOWN_REQUIRED_MESSAGE,
+  shutdownBot,
+} from "./shutdown.ts";
 
 const NEEDS_API_KEY_MESSAGE =
   "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+
+function isShutdownCommand(content: string): boolean {
+  const command = content.trim().toLowerCase();
+  return command === "/shutdown" || command === "shutdown";
+}
 
 export async function handleDirectMessage(message: Message): Promise<void> {
   const existingApiKey = await getApiKey(message.author.id);
   const conversationId = getMessageConversationId(message);
   const messageContent = buildMessageContent(message);
+  const actor = actorFromMessage(message);
 
   if (isHelpCommand(messageContent)) {
-    await message.reply(buildHelpMessage(true));
+    await message.reply(
+      buildHelpMessage(canAccessLocalComputer(actor)),
+    );
+    return;
+  }
+
+  if (isSystemPromptRequest(messageContent)) {
+    await message.reply(SYSTEM_PROMPT_DENIAL_MESSAGE);
+    return;
+  }
+
+  if (isShutdownCommand(messageContent)) {
+    if (!canShutdownBot(actor)) {
+      await message.reply(SHUTDOWN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    console.warn(JSON.stringify({
+      at: new Date().toISOString(),
+      channelId: message.channelId,
+      event: "shutdown_command",
+      guildId: message.guildId,
+      userId: message.author.id,
+      username: message.author.tag,
+      roleIds: actor.roleIds,
+    }));
+    await message.reply("Shutting down Missy now.");
+    shutdownBot(`Discord DM command by ${message.author.id}`);
     return;
   }
 
@@ -56,14 +100,20 @@ export async function handleDirectMessage(message: Message): Promise<void> {
   }
 
   if (mistralMessage.trim().toLowerCase() === "/clear") {
-    await clearConversationContext(conversationId);
+    await clearConversationContext(conversationId, {
+      createdAt: message.createdAt,
+      messageId: message.id,
+    });
     await message.reply("Cleared this conversation context.");
     return;
   }
 
   try {
     await sendTyping(message);
-    const context = await getConversationContext(conversationId);
+    const context = shouldUsePriorConversation(mistralMessage)
+      ? await getConversationContext(conversationId)
+      : [];
+    const model = await getEffectiveModel(message.author.id);
     const reply = await sendMistralMessage(existingApiKey, {
       message: mistralMessage,
       source: "discord-dm",
@@ -71,11 +121,14 @@ export async function handleDirectMessage(message: Message): Promise<void> {
         userId: message.author.id,
         username: message.author.tag,
         channelId: message.channelId,
+        roleIds: actor.roleIds,
       },
     }, {
       context,
-      requestFileOperationApproval: (request) =>
-        requestMessageFileOperationApproval(message, request),
+      model,
+      requestFileOperationApproval: canAccessLocalComputer(actor)
+        ? (request) => requestMessageFileOperationApproval(message, request)
+        : undefined,
     });
     await appendConversationTurn(conversationId, mistralMessage, reply);
     await replyWithDiscordMessages(message, reply);

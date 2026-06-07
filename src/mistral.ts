@@ -2,8 +2,8 @@ import { ConversationMessage } from "./context.ts";
 import {
   callFilesystemTool,
   FileOperationApprovalHandler,
-  filesystemTools,
   FILESYSTEM_TOOL_NAMES,
+  filesystemTools,
 } from "./filesystemTools.ts";
 import {
   callMcpTool,
@@ -12,10 +12,14 @@ import {
   McpToolRegistry,
   MistralToolDefinition,
 } from "./mcp.ts";
+import {
+  canAccessLocalComputer,
+  LOCAL_ACCESS_REQUIRED_MESSAGE,
+} from "./localAccess.ts";
+import { defaultMistralModel } from "./models.ts";
 
 const MISTRAL_CHAT_API_URL = "https://api.mistral.ai/v1/chat/completions";
 const MISTRAL_CONVERSATIONS_API_URL = "https://api.mistral.ai/v1/conversations";
-const DEFAULT_MISTRAL_MODEL = "mistral-small-latest";
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const DISCORD_MESSAGE_BREAK = "MISSY_MESSAGE_BREAK";
 const MAX_TOOL_CALL_ROUNDS = 4;
@@ -40,6 +44,7 @@ export type MistralMessagePayload = {
     username: string;
     channelId?: string;
     guildId?: string;
+    roleIds?: readonly string[];
   };
 };
 
@@ -113,30 +118,99 @@ export type MistralSendOptions = {
   context?: ConversationMessage[];
   discordHistory?: string;
   enableMcp?: boolean;
+  model?: string;
   requestFileOperationApproval?: FileOperationApprovalHandler;
 };
 
-function getMistralModel(): string {
-  return Deno.env.get("MISTRAL_MODEL") ?? DEFAULT_MISTRAL_MODEL;
+function getMistralModel(options: MistralSendOptions): string {
+  return options.model ?? defaultMistralModel();
 }
 
 function hasOpenAiApiKey(): boolean {
   return Boolean(Deno.env.get("OPENAI_API_KEY")?.trim());
 }
 
-function isPrivateDiscordContext(payload: MistralMessagePayload): boolean {
-  return !payload.discord.guildId;
+function hasLocalAccess(payload: MistralMessagePayload): boolean {
+  return canAccessLocalComputer({
+    roleIds: payload.discord.roleIds,
+    userId: payload.discord.userId,
+  });
+}
+
+function localAccessContextLabel(payload: MistralMessagePayload): string {
+  return payload.discord.guildId
+    ? "a Discord server/guild channel"
+    : "a Discord DM";
+}
+
+function hasCurrentLocalFilesystemIntent(
+  payload: MistralMessagePayload,
+): boolean {
+  const message = payload.message.trim().toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  if (/[a-z]:[\\/]|\\\\[a-z0-9._$-]+[\\/]/i.test(payload.message)) {
+    return true;
+  }
+
+  if (/\b(cd|dir|ls|pwd)\b/.test(message)) {
+    return true;
+  }
+
+  const localSubject =
+    /\b(desktop|downloads?|documents?|filesystem|file system|local|drives?|directories|directory|folders?|files?|paths?|repo|repository)\b/
+      .test(message);
+  const localAction =
+    /\b(access|browse|cat|check|copy|create|delete|find|inspect|list|locate|mkdir|move|open|read|remove|rename|show|stat|tree|write|overwrite)\b/
+      .test(message);
+
+  return localSubject && localAction;
+}
+
+function isStaleLocalAccessDenial(message: ConversationMessage): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+
+  return /dm\s+(me|missy)|dm\s+directly|only\s+access.+dm|message\s+me\s+in\s+a\s+dm|only\s+access.+desktop|desktop.+not\s+the\s+d:|only\s+access\s+your\s+desktop/i
+    .test(message.content);
+}
+
+function isLocalFilesystemContext(message: ConversationMessage): boolean {
+  return /[a-z]:[\\/]|desktop files?|filesystem|local (computer|files?|folders?|paths?)|d:\/|d:\\|d drive|directory|folders? in|files? in/i
+    .test(message.content);
+}
+
+function contextForPayload(
+  payload: MistralMessagePayload,
+  options: MistralSendOptions,
+): ConversationMessage[] {
+  const context = options.context ?? [];
+
+  if (!hasLocalAccess(payload)) {
+    return context;
+  }
+
+  if (!hasCurrentLocalFilesystemIntent(payload)) {
+    return context.filter((message) => !isLocalFilesystemContext(message));
+  }
+
+  return context.filter((message) => !isStaleLocalAccessDenial(message));
 }
 
 function filterMcpToolsForPayload(
   registry: McpToolRegistry,
   payload: MistralMessagePayload,
 ): McpToolRegistry {
-  const privateContext = isPrivateDiscordContext(payload);
+  const localAccess = hasLocalAccess(payload);
+  const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
 
   return filterMcpToolRegistry(registry, (functionName, entry) => {
     if (entry.toolName === "computer_task") {
-      return privateContext && hasOpenAiApiKey();
+      return localAccess && localFilesystemIntent && hasOpenAiApiKey();
     }
 
     if (
@@ -149,7 +223,7 @@ function filterMcpToolsForPayload(
       entry.toolName === "desktop_list" ||
       entry.toolName === "desktop_read"
     ) {
-      return privateContext;
+      return false;
     }
 
     return true;
@@ -160,7 +234,7 @@ function getBuiltinToolsForPayload(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): MistralToolDefinition[] {
-  if (!isPrivateDiscordContext(payload)) {
+  if (!hasLocalAccess(payload) || !hasCurrentLocalFilesystemIntent(payload)) {
     return [];
   }
 
@@ -169,7 +243,9 @@ function getBuiltinToolsForPayload(
 
 function isFilesystemTool(toolName: string): boolean {
   return Object.values(FILESYSTEM_TOOL_NAMES).includes(
-    toolName as typeof FILESYSTEM_TOOL_NAMES[keyof typeof FILESYSTEM_TOOL_NAMES],
+    toolName as typeof FILESYSTEM_TOOL_NAMES[
+      keyof typeof FILESYSTEM_TOOL_NAMES
+    ],
   );
 }
 
@@ -177,9 +253,20 @@ async function callAvailableTool(
   registry: McpToolRegistry,
   toolName: string,
   rawArguments: unknown,
+  payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): Promise<string> {
   if (isFilesystemTool(toolName)) {
+    if (!hasLocalAccess(payload)) {
+      throw new Error(LOCAL_ACCESS_REQUIRED_MESSAGE);
+    }
+
+    if (!hasCurrentLocalFilesystemIntent(payload)) {
+      throw new Error(
+        "Filesystem tools are available only when the current Discord message explicitly asks to inspect or modify local files.",
+      );
+    }
+
     return await callFilesystemTool(
       toolName,
       rawArguments,
@@ -259,10 +346,11 @@ export function splitDiscordMessages(message: string): string[] {
 async function completeChat(
   apiKey: string,
   messages: MistralChatMessage[],
+  options: MistralSendOptions,
   tools?: unknown[],
 ): Promise<MistralChatResponse> {
   const body: Record<string, unknown> = {
-    model: getMistralModel(),
+    model: getMistralModel(options),
     messages,
   };
 
@@ -338,18 +426,35 @@ async function deleteMistralConversation(
   }
 }
 
+function buildPersonalityInstruction(): string {
+  return [
+    "You are Missy, a helpful Discord bot powered by Mistral. You are not Poke and should not claim to be developed by Interaction.",
+    "Sound more like a sharp, warm friend in a group chat than a traditional chatbot. Be concise by default, match the user's casualness, and avoid corporate helper phrases like 'How can I help you?', 'Let me know if you need anything else', 'No problem at all', or 'I apologize for the confusion'.",
+    "Use light wit or dry humor only when it fits naturally. Do not force jokes, do not stack multiple jokes, and do not use filler slang like lol/lmao unless it genuinely fits the user's tone.",
+    "If the user is just chatting, answer like a person. Do not turn every casual message into an offer to help or an explanation.",
+    "Do not use emoji unless the user used emoji first. If reacting is better than replying, include a line like MISSY_REACT: <emoji>. To intentionally send no text reply, include a line containing only MISSY_NO_REPLY.",
+    `You may split a response into multiple Discord messages when it feels more natural for texting, when separating topics, or when a long answer would read better in chunks. Put a line containing only ${DISCORD_MESSAGE_BREAK} between messages. Prefer a few clean text-message-sized chunks over one dense wall of text.`,
+  ].join(" ");
+}
+
 function buildMessages(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): MistralChatMessage[] {
-  const localAccessInstruction = isPrivateDiscordContext(payload)
-    ? "In DMs, you may use available filesystem tools to stat, list, read, copy, create folders, write text files, move, rename, overwrite, or delete local paths. Move, overwrite, and delete tools ask the user for explicit approval before changing existing filesystem content."
-    : "In guild/server contexts, never access local Desktop or computer files and never modify local filesystem paths. Tell the user to DM Missy for local filesystem access.";
+  const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
+  const localAccessInstruction =
+    hasLocalAccess(payload) && localFilesystemIntent
+      ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
+        localAccessContextLabel(payload)
+      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. Use available filesystem tools when helpful. Every filesystem tool asks the user for explicit check/cross approval before it runs.`
+      : hasLocalAccess(payload)
+      ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
+      : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never access local Desktop or computer files and never modify local filesystem paths for this user.`;
   const messages: MistralChatMessage[] = [
     {
       role: "system",
       content:
-        `You are Missy, a helpful Discord bot powered by Mistral. Reply naturally and keep answers concise unless the user asks for detail. Use provided Discord history only as context for the current request. If the response is clearer as multiple Discord messages, put a line containing only ${DISCORD_MESSAGE_BREAK} between messages. To react to the triggering Discord message, include a line like MISSY_REACT: 👍. To intentionally send no text reply, include a line containing only MISSY_NO_REPLY. ${localAccessInstruction}`,
+        `${buildPersonalityInstruction()} Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
     },
   ];
 
@@ -360,7 +465,7 @@ function buildMessages(
     });
   }
 
-  for (const message of options.context ?? []) {
+  for (const message of contextForPayload(payload, options)) {
     messages.push(message);
   }
 
@@ -376,16 +481,18 @@ function buildInstructions(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): string {
-  const localAccessInstruction = isPrivateDiscordContext(payload)
-    ? "In DMs, you may use filesystem tools to stat, list, read, copy, create folders, write text files, move, rename, overwrite, or delete local paths. Deletion is only available through the permission prompt; move and overwrite also require approval."
-    : "In guild/server contexts, never access local Desktop or computer files and never modify local filesystem paths. Tell the user to DM Missy for local filesystem access.";
+  const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
+  const localAccessInstruction =
+    hasLocalAccess(payload) && localFilesystemIntent
+      ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
+        localAccessContextLabel(payload)
+      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. If the user asks about local files, use filesystem tools when helpful. Every filesystem tool asks the user for explicit check/cross approval before it runs.`
+      : hasLocalAccess(payload)
+      ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
+      : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never move, rename, delete, read, write, copy, create, or list local filesystem paths for this user.`;
   const instructions = [
-    `You are Missy, a helpful Discord bot powered by Mistral. Reply naturally and keep answers concise unless the user asks for detail. If the response is clearer as multiple Discord messages, put a line containing only ${DISCORD_MESSAGE_BREAK} between messages.`,
-    "To react to the triggering Discord message, include a line like MISSY_REACT: 👍. To intentionally send no text reply, include a line containing only MISSY_NO_REPLY.",
+    buildPersonalityInstruction(),
     "You have access to web_search for up-to-date information. Use it when the user asks about current events, recent facts, live information, or a specific webpage.",
-    isPrivateDiscordContext(payload)
-      ? "If the user asks about local files, use filesystem tools when helpful. Deletion is only available through the permission prompt, and move/overwrite also require approval."
-      : "Do not move, rename, delete, read, write, copy, create, or list local filesystem paths in guild/server contexts.",
     localAccessInstruction,
   ];
 
@@ -403,7 +510,7 @@ function buildConversationInputs(
   options: MistralSendOptions,
 ): MistralConversationInput[] {
   return [
-    ...(options.context ?? []).map((message) => ({
+    ...contextForPayload(payload, options).map((message) => ({
       role: message.role,
       content: message.content,
     })),
@@ -430,7 +537,9 @@ function referenceLabel(reference: MistralReferenceBlock): string | undefined {
   return undefined;
 }
 
-function extractConversationOutputText(output: MistralConversationOutput): string {
+function extractConversationOutputText(
+  output: MistralConversationOutput,
+): string {
   const content = output.content;
 
   if (typeof content === "string") {
@@ -460,7 +569,9 @@ function extractConversationOutputText(output: MistralConversationOutput): strin
   return `${text}\n\nSources:\n${uniqueReferences.join("\n")}`.trim();
 }
 
-function extractConversationText(response: MistralConversationResponse): string {
+function extractConversationText(
+  response: MistralConversationResponse,
+): string {
   const messages = (response.outputs ?? [])
     .filter((output) => output.type === "message.output")
     .map(extractConversationOutputText)
@@ -508,7 +619,7 @@ async function sendMistralConversationMessage(
     },
     inputs: buildConversationInputs(payload, options),
     instructions: buildInstructions(payload, options),
-    model: getMistralModel(),
+    model: getMistralModel(options),
     store: true,
     stream: false,
     tools,
@@ -542,6 +653,7 @@ async function sendMistralConversationMessage(
             registry,
             toolName,
             functionCall.arguments,
+            payload,
             options,
           );
         } catch (error) {
@@ -606,7 +718,7 @@ async function sendMistralChatMessage(
     ...registry.tools,
   ];
 
-  let parsed = await completeChat(apiKey, messages, tools);
+  let parsed = await completeChat(apiKey, messages, options, tools);
 
   for (let round = 0; round < MAX_TOOL_CALL_ROUNDS; round++) {
     const assistantMessage = parsed.choices?.[0]?.message;
@@ -638,6 +750,7 @@ async function sendMistralChatMessage(
           registry,
           toolName,
           toolCall.function?.arguments,
+          payload,
           options,
         );
       } catch (error) {
@@ -654,7 +767,7 @@ async function sendMistralChatMessage(
       });
     }
 
-    parsed = await completeChat(apiKey, messages, tools);
+    parsed = await completeChat(apiKey, messages, options, tools);
   }
 
   const reply = extractResponseText(parsed);

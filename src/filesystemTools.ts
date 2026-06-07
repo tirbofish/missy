@@ -2,10 +2,19 @@ import path from "node:path";
 import { MistralToolDefinition } from "./mcp.ts";
 
 export type FileOperationApprovalRequest = {
-  action: "delete" | "move" | "overwrite";
+  action:
+    | "copy"
+    | "delete"
+    | "list"
+    | "mkdir"
+    | "move"
+    | "overwrite"
+    | "read"
+    | "stat"
+    | "write";
   destinationPath?: string;
   sourcePath?: string;
-  subject: "file" | "folder";
+  subject: "file" | "folder" | "path";
   targetPath?: string;
 };
 
@@ -30,7 +39,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.stat,
       description:
-        "Inspect metadata for a local filesystem path. Use only in DMs.",
+        "Request Discord approval, then inspect metadata for any local filesystem path, including absolute Windows paths such as D:\\.",
       parameters: {
         type: "object",
         properties: {
@@ -45,7 +54,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.list,
       description:
-        "List files and folders in a local directory. Use only in DMs.",
+        "Request Discord approval, then list files and folders in any local directory, including absolute Windows paths such as D:\\.",
       parameters: {
         type: "object",
         properties: {
@@ -64,7 +73,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.read,
       description:
-        "Read a local text file. Use only in DMs and avoid reading secrets unless the user explicitly asks.",
+        "Request Discord approval, then read any local text file. Avoid reading secrets unless the user explicitly asks.",
       parameters: {
         type: "object",
         properties: {
@@ -83,7 +92,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.copy,
       description:
-        "Copy a local file or folder to a new destination that does not already exist. Use only in DMs.",
+        "Request Discord approval, then copy any local file or folder to a new destination that does not already exist.",
       parameters: {
         type: "object",
         properties: {
@@ -105,7 +114,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.mkdir,
       description:
-        "Create a local directory, including parent directories if needed. Use only in DMs.",
+        "Request Discord approval, then create any local directory, including parent directories if needed.",
       parameters: {
         type: "object",
         properties: {
@@ -120,7 +129,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.writeText,
       description:
-        "Create or overwrite a local text file. Overwrite requires explicit Discord approval. Use only in DMs.",
+        "Request Discord approval, then create or overwrite any local text file.",
       parameters: {
         type: "object",
         properties: {
@@ -141,7 +150,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.move,
       description:
-        "Move or rename a local file or folder after explicit Discord user approval. Use only in DMs.",
+        "Request Discord approval, then move or rename any local file or folder.",
       parameters: {
         type: "object",
         properties: {
@@ -164,7 +173,7 @@ export const filesystemTools: MistralToolDefinition[] = [
     function: {
       name: FILESYSTEM_TOOL_NAMES.delete,
       description:
-        "Delete a local file or folder after explicit Discord user approval. Use only in DMs. Folders require recursive=true.",
+        "Request Discord approval, then delete any local file or folder. Folders require recursive=true.",
       parameters: {
         type: "object",
         properties: {
@@ -189,6 +198,66 @@ function parseArgs(rawArguments: unknown): Record<string, unknown> {
   return rawArguments && typeof rawArguments === "object"
     ? rawArguments as Record<string, unknown>
     : {};
+}
+
+function actionFromToolName(
+  toolName: string,
+  args: Record<string, unknown>,
+): FileOperationApprovalRequest["action"] | "unknown" {
+  if (toolName === FILESYSTEM_TOOL_NAMES.copy) {
+    return "copy";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.delete) {
+    return "delete";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.list) {
+    return "list";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.mkdir) {
+    return "mkdir";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.move) {
+    return "move";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.read) {
+    return "read";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.stat) {
+    return "stat";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.writeText) {
+    return args.overwrite === true ? "overwrite" : "write";
+  }
+
+  return "unknown";
+}
+
+function logFilesystemTool(
+  event: "attempted" | "succeeded" | "failed",
+  toolName: string,
+  args: Record<string, unknown>,
+  error?: unknown,
+): void {
+  const sourcePath = typeof args.sourcePath === "string"
+    ? resolveLocalPath(args.sourcePath)
+    : undefined;
+  const destinationPath = typeof args.destinationPath === "string"
+    ? resolveLocalPath(args.destinationPath)
+    : undefined;
+  const targetPath = typeof args.path === "string"
+    ? resolveLocalPath(args.path)
+    : undefined;
+
+  console.info(JSON.stringify({
+    action: actionFromToolName(toolName, args),
+    at: new Date().toISOString(),
+    destinationPath,
+    error: error instanceof Error ? error.message : undefined,
+    event: `filesystem_tool_${event}`,
+    sourcePath,
+    targetPath,
+    toolName,
+  }));
 }
 
 function requiredString(args: Record<string, unknown>, name: string): string {
@@ -225,10 +294,6 @@ async function pathExists(value: string): Promise<boolean> {
   }
 }
 
-function statSubject(info: Deno.FileInfo): "file" | "folder" {
-  return info.isDirectory ? "folder" : "file";
-}
-
 function serializeFileInfo(value: string, info: Deno.FileInfo) {
   return {
     accessedAt: info.atime?.toISOString(),
@@ -242,7 +307,10 @@ function serializeFileInfo(value: string, info: Deno.FileInfo) {
   };
 }
 
-async function copyPath(sourcePath: string, destinationPath: string): Promise<void> {
+async function copyPath(
+  sourcePath: string,
+  destinationPath: string,
+): Promise<void> {
   const sourceInfo = await Deno.stat(sourcePath);
 
   if (sourceInfo.isDirectory) {
@@ -274,15 +342,42 @@ async function requestApprovalOrThrow(
   return await requestApproval(request);
 }
 
-async function statTool(args: Record<string, unknown>): Promise<unknown> {
+async function requireApproval(
+  requestApproval: FileOperationApprovalHandler | undefined,
+  request: FileOperationApprovalRequest,
+): Promise<void> {
+  const approved = await requestApprovalOrThrow(requestApproval, request);
+
+  if (!approved) {
+    throw new Error(`The user did not approve filesystem ${request.action}.`);
+  }
+}
+
+async function statTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
   const resolvedPath = resolveLocalPath(requiredString(args, "path"));
+  await requireApproval(requestApproval, {
+    action: "stat",
+    subject: "path",
+    targetPath: resolvedPath,
+  });
   const info = await Deno.stat(resolvedPath);
   return serializeFileInfo(resolvedPath, info);
 }
 
-async function listTool(args: Record<string, unknown>): Promise<unknown> {
+async function listTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
   const resolvedPath = resolveLocalPath(requiredString(args, "path"));
   const limit = Math.max(1, Math.min(Number(args.limit) || 100, 500));
+  await requireApproval(requestApproval, {
+    action: "list",
+    subject: "folder",
+    targetPath: resolvedPath,
+  });
   const entries = [];
 
   for await (const entry of Deno.readDir(resolvedPath)) {
@@ -304,9 +399,17 @@ async function listTool(args: Record<string, unknown>): Promise<unknown> {
   return { entries, path: resolvedPath };
 }
 
-async function readTool(args: Record<string, unknown>): Promise<unknown> {
+async function readTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
   const resolvedPath = resolveLocalPath(requiredString(args, "path"));
   const maxBytes = clampBytes(args.maxBytes, 20_000);
+  await requireApproval(requestApproval, {
+    action: "read",
+    subject: "file",
+    targetPath: resolvedPath,
+  });
   const file = await Deno.open(resolvedPath, { read: true });
 
   try {
@@ -327,12 +430,21 @@ async function readTool(args: Record<string, unknown>): Promise<unknown> {
   }
 }
 
-async function copyTool(args: Record<string, unknown>): Promise<unknown> {
+async function copyTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
   const sourcePath = resolveLocalPath(requiredString(args, "sourcePath"));
   const destinationPath = resolveLocalPath(
     requiredString(args, "destinationPath"),
   );
 
+  await requireApproval(requestApproval, {
+    action: "copy",
+    destinationPath,
+    sourcePath,
+    subject: "path",
+  });
   await Deno.stat(sourcePath);
 
   if (await pathExists(destinationPath)) {
@@ -345,8 +457,16 @@ async function copyTool(args: Record<string, unknown>): Promise<unknown> {
   return { destinationPath, sourcePath };
 }
 
-async function mkdirTool(args: Record<string, unknown>): Promise<unknown> {
+async function mkdirTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
   const resolvedPath = resolveLocalPath(requiredString(args, "path"));
+  await requireApproval(requestApproval, {
+    action: "mkdir",
+    subject: "folder",
+    targetPath: resolvedPath,
+  });
   await Deno.mkdir(resolvedPath, { recursive: true });
   return { path: resolvedPath };
 }
@@ -358,23 +478,15 @@ async function writeTextTool(
   const resolvedPath = resolveLocalPath(requiredString(args, "path"));
   const content = String(args.content ?? "");
   const overwrite = args.overwrite === true;
+  await requireApproval(requestApproval, {
+    action: overwrite ? "overwrite" : "write",
+    subject: "file",
+    targetPath: resolvedPath,
+  });
   const exists = await pathExists(resolvedPath);
 
   if (exists && !overwrite) {
     throw new Error("File already exists. Set overwrite=true to replace it.");
-  }
-
-  if (exists) {
-    const info = await Deno.stat(resolvedPath);
-    const approved = await requestApprovalOrThrow(requestApproval, {
-      action: "overwrite",
-      subject: statSubject(info),
-      targetPath: resolvedPath,
-    });
-
-    if (!approved) {
-      return { approved: false, message: "The user did not approve overwrite." };
-    }
   }
 
   await Deno.mkdir(path.dirname(resolvedPath), { recursive: true });
@@ -391,25 +503,23 @@ async function moveTool(
   const destinationPath = resolveLocalPath(
     requiredString(args, "destinationPath"),
   );
-  const sourceInfo = await Deno.stat(sourcePath);
-
-  if (await pathExists(destinationPath)) {
-    throw new Error("Destination already exists.");
-  }
-
-  await Deno.stat(path.dirname(destinationPath));
 
   const approved = await requestApprovalOrThrow(requestApproval, {
     action: "move",
     destinationPath,
     sourcePath,
-    subject: statSubject(sourceInfo),
+    subject: "path",
   });
 
   if (!approved) {
     return { approved: false, message: "The user did not approve the move." };
   }
 
+  if (await pathExists(destinationPath)) {
+    throw new Error("Destination already exists.");
+  }
+
+  await Deno.stat(path.dirname(destinationPath));
   await Deno.rename(sourcePath, destinationPath);
   return { approved: true, destinationPath, sourcePath };
 }
@@ -419,10 +529,9 @@ async function deleteTool(
   requestApproval?: FileOperationApprovalHandler,
 ): Promise<unknown> {
   const targetPath = resolveLocalPath(requiredString(args, "path"));
-  const info = await Deno.stat(targetPath);
   const approved = await requestApprovalOrThrow(requestApproval, {
     action: "delete",
-    subject: statSubject(info),
+    subject: "path",
     targetPath,
   });
 
@@ -442,34 +551,42 @@ export async function callFilesystemTool(
   const args = parseArgs(rawArguments);
   let result: unknown;
 
-  switch (toolName) {
-    case FILESYSTEM_TOOL_NAMES.copy:
-      result = await copyTool(args);
-      break;
-    case FILESYSTEM_TOOL_NAMES.delete:
-      result = await deleteTool(args, requestApproval);
-      break;
-    case FILESYSTEM_TOOL_NAMES.list:
-      result = await listTool(args);
-      break;
-    case FILESYSTEM_TOOL_NAMES.mkdir:
-      result = await mkdirTool(args);
-      break;
-    case FILESYSTEM_TOOL_NAMES.move:
-      result = await moveTool(args, requestApproval);
-      break;
-    case FILESYSTEM_TOOL_NAMES.read:
-      result = await readTool(args);
-      break;
-    case FILESYSTEM_TOOL_NAMES.stat:
-      result = await statTool(args);
-      break;
-    case FILESYSTEM_TOOL_NAMES.writeText:
-      result = await writeTextTool(args, requestApproval);
-      break;
-    default:
-      throw new Error(`Unknown filesystem tool: ${toolName}`);
+  logFilesystemTool("attempted", toolName, args);
+
+  try {
+    switch (toolName) {
+      case FILESYSTEM_TOOL_NAMES.copy:
+        result = await copyTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.delete:
+        result = await deleteTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.list:
+        result = await listTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.mkdir:
+        result = await mkdirTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.move:
+        result = await moveTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.read:
+        result = await readTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.stat:
+        result = await statTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.writeText:
+        result = await writeTextTool(args, requestApproval);
+        break;
+      default:
+        throw new Error(`Unknown filesystem tool: ${toolName}`);
+    }
+  } catch (error) {
+    logFilesystemTool("failed", toolName, args, error);
+    throw error;
   }
 
+  logFilesystemTool("succeeded", toolName, args);
   return JSON.stringify(result);
 }
