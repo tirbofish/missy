@@ -402,7 +402,7 @@ export class MissyCommands {
   })
   async model(
     @SlashOption({
-      description: "Model name, or default/reset to use MISTRAL_MODEL",
+      description: "Model name, router, or default/reset to use MISTRAL_MODEL",
       name: "model",
       required: false,
       type: ApplicationCommandOptionType.String,

@@ -1,5 +1,11 @@
 import { ConversationMessage } from "./context.ts";
 import {
+  braveSearchTools,
+  callBraveSearchTool,
+  hasBraveSearchApiKey,
+  isBraveSearchTool,
+} from "./braveSearch.ts";
+import {
   callFilesystemTool,
   FileOperationApprovalHandler,
   FILESYSTEM_TOOL_NAMES,
@@ -17,7 +23,7 @@ import {
   LOCAL_ACCESS_REQUIRED_MESSAGE,
 } from "./localAccess.ts";
 import { isCurrentLookupRequest } from "./currentLookup.ts";
-import { defaultMistralModel } from "./models.ts";
+import { defaultMistralModel, isRouterModel } from "./models.ts";
 
 const MISTRAL_CHAT_API_URL = "https://api.mistral.ai/v1/chat/completions";
 const MISTRAL_CONVERSATIONS_API_URL = "https://api.mistral.ai/v1/conversations";
@@ -25,6 +31,10 @@ const DISCORD_MESSAGE_LIMIT = 2_000;
 const DISCORD_MESSAGE_BREAK = "MISSY_MESSAGE_BREAK";
 const MAX_TOOL_CALL_ROUNDS = 4;
 const MAX_CONVERSATION_TOOL_ROUNDS = 4;
+const DEFAULT_ROUTER_FAST_MODEL = "mistral-small-latest";
+const DEFAULT_ROUTER_REASONING_MODEL = "mistral-large-latest";
+
+type RouterModelRoute = "fast" | "general" | "reasoning" | "tool" | "vision";
 
 export class MistralApiError extends Error {
   constructor(
@@ -144,6 +154,107 @@ export type MistralToolActivity = {
 
 function getMistralModel(options: MistralSendOptions): string {
   return options.model ?? defaultMistralModel();
+}
+
+function routerModelFromEnv(
+  route: RouterModelRoute,
+  fallback: string,
+): string {
+  const envName = `MISTRAL_ROUTER_${route.toUpperCase()}_MODEL`;
+  return Deno.env.get(envName)?.trim() || fallback;
+}
+
+function routerTargetModel(route: RouterModelRoute): string {
+  const fast = routerModelFromEnv("fast", DEFAULT_ROUTER_FAST_MODEL);
+  const general = routerModelFromEnv("general", fast);
+  const tool = routerModelFromEnv("tool", general);
+  const vision = routerModelFromEnv("vision", general);
+  const reasoning = routerModelFromEnv(
+    "reasoning",
+    DEFAULT_ROUTER_REASONING_MODEL,
+  );
+
+  switch (route) {
+    case "fast":
+      return fast;
+    case "general":
+      return general;
+    case "reasoning":
+      return reasoning;
+    case "tool":
+      return tool;
+    case "vision":
+      return vision;
+  }
+}
+
+function totalContextLength(options: MistralSendOptions): number {
+  const contextLength = (options.context ?? []).reduce(
+    (total, message) => total + message.content.length,
+    0,
+  );
+  return contextLength + (options.discordHistory?.length ?? 0);
+}
+
+function isShortCasualRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+
+  return normalized.length <= 140 &&
+    /^(hi|hey|hello|yo|sup|thanks|thank you|ty|ok|okay|k|lol|lmao|haha|nah|yes|no|yep|nope|gm|gn|good morning|good night)\b/
+      .test(normalized);
+}
+
+function isReasoningHeavyRequest(
+  payload: MistralMessagePayload,
+  options: MistralSendOptions,
+): boolean {
+  const normalized = payload.message.trim().toLowerCase();
+
+  if (payload.message.length > 900 || totalContextLength(options) > 6_000) {
+    return true;
+  }
+
+  return /\b(debug|fix|implement|refactor|architect|design|write code|code review|review this code|stack trace|typescript|javascript|python|sql|regex|algorithm|prove|proof|derive|calculate|math|step by step|deep dive|analy[sz]e|compare|tradeoffs?|plan|strategy|why does|root cause)\b/
+    .test(normalized);
+}
+
+function routerRouteForPayload(
+  payload: MistralMessagePayload,
+  options: MistralSendOptions,
+): RouterModelRoute {
+  if (hasVisionImages(payload)) {
+    return "vision";
+  }
+
+  if (
+    hasCurrentLocalFilesystemIntent(payload) ||
+    shouldUseWebSearch(payload.message)
+  ) {
+    return "tool";
+  }
+
+  if (isReasoningHeavyRequest(payload, options)) {
+    return "reasoning";
+  }
+
+  if (isShortCasualRequest(payload.message)) {
+    return "fast";
+  }
+
+  return "general";
+}
+
+export function resolveMistralModelForPayload(
+  payload: MistralMessagePayload,
+  options: MistralSendOptions = {},
+): string {
+  const requestedModel = options.model ?? defaultMistralModel();
+
+  if (!isRouterModel(requestedModel)) {
+    return requestedModel;
+  }
+
+  return routerTargetModel(routerRouteForPayload(payload, options));
 }
 
 function hasOpenAiApiKey(): boolean {
@@ -286,11 +397,17 @@ function getBuiltinToolsForPayload(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): MistralToolDefinition[] {
-  if (!hasLocalAccess(payload) || !hasCurrentLocalFilesystemIntent(payload)) {
-    return [];
+  const tools: MistralToolDefinition[] = [];
+
+  if (shouldExposeBraveSearchTools(payload)) {
+    tools.push(...braveSearchTools);
   }
 
-  return filesystemTools;
+  if (hasLocalAccess(payload) && hasCurrentLocalFilesystemIntent(payload)) {
+    tools.push(...filesystemTools);
+  }
+
+  return tools;
 }
 
 function isFilesystemTool(toolName: string): boolean {
@@ -376,6 +493,10 @@ async function callAvailableTool(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): Promise<string> {
+  if (isBraveSearchTool(toolName)) {
+    return await callBraveSearchTool(toolName, rawArguments);
+  }
+
   if (isFilesystemTool(toolName)) {
     if (!hasLocalAccess(payload)) {
       throw new Error(LOCAL_ACCESS_REQUIRED_MESSAGE);
@@ -397,25 +518,28 @@ async function callAvailableTool(
   return await callMcpTool(registry, toolName, rawArguments);
 }
 
-function websearchEnabled(): boolean {
-  return (Deno.env.get("MISTRAL_ENABLE_WEBSEARCH") ?? "1") !== "0";
+function braveSearchEnabled(): boolean {
+  return (Deno.env.get("BRAVE_ENABLE_SEARCH") ?? "1") !== "0";
+}
+
+function shouldExposeBraveSearchTools(payload: MistralMessagePayload): boolean {
+  return braveSearchEnabled() && hasBraveSearchApiKey() &&
+    shouldUseWebSearch(payload.message);
+}
+
+function conversationApiEnabled(): boolean {
+  return Deno.env.get("MISTRAL_USE_CONVERSATIONS") === "1";
 }
 
 function conversationStoreEnabled(): boolean {
   return Deno.env.get("MISTRAL_KEEP_CONVERSATIONS") === "1";
 }
 
-function websearchToolType(): "web_search" | "web_search_premium" {
-  return Deno.env.get("MISTRAL_WEBSEARCH_TOOL") === "web_search_premium"
-    ? "web_search_premium"
-    : "web_search";
-}
-
 function hasVisionImages(payload: MistralMessagePayload): boolean {
   return (payload.imageUrls?.length ?? 0) > 0;
 }
 
-export function shouldUseMistralWebSearch(message: string): boolean {
+export function shouldUseWebSearch(message: string): boolean {
   const normalized = message.trim().toLowerCase();
 
   if (!normalized) {
@@ -434,6 +558,15 @@ export function shouldUseMistralWebSearch(message: string): boolean {
   }
 
   if (/https?:\/\/\S+/i.test(message)) {
+    return true;
+  }
+
+  if (
+    /\b(search|look up|find|show|get|send|give|drop)\b.{0,40}\b(images?|pictures?|photos?|visual references?|videos?|clips?|trailers?|tutorials?)\b/
+      .test(normalized) ||
+    /\b(images?|pictures?|photos?|visual references?|videos?|clips?|trailers?|tutorials?)\b.{0,40}\b(search|lookup|look up|find)\b/
+      .test(normalized)
+  ) {
     return true;
   }
 
@@ -662,6 +795,24 @@ async function loadPersonalityInstruction(): Promise<string> {
   }
 }
 
+function searchInstructionForPayload(payload: MistralMessagePayload): string {
+  const searchRequested = shouldUseWebSearch(payload.message);
+
+  if (!braveSearchEnabled()) {
+    return "Web search tools are disabled. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.";
+  }
+
+  if (!searchRequested) {
+    return "Brave Search tools are not available for this request because the user did not ask for current, live, recent, specific web/page, image search, or video search information. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.";
+  }
+
+  if (!hasBraveSearchApiKey()) {
+    return "The user asked for web search, but BRAVE_SEARCH_API_KEY is not configured. Do not claim you searched the web.";
+  }
+
+  return "You have Brave Search tools for this request because the user asked for current, live, recent, specific web/page, image search, or video search information. Use missy_brave_web_search for normal web lookups, missy_brave_image_search for online image/photo searches, missy_brave_video_search for online video searches, and missy_brave_news_search for recent news. Never answer with only a waiting/checking message; if you use a Brave Search tool, provide the actual answer in this same response.";
+}
+
 function buildMessages(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
@@ -680,7 +831,9 @@ function buildMessages(
       role: "system",
       content: `${options.personalityInstruction} ${
         userIdentityInstruction(payload)
-      } Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
+      } Use provided Discord history only as context for the current request. ${
+        searchInstructionForPayload(payload)
+      } ${localAccessInstruction}`,
     },
   ];
 
@@ -729,8 +882,6 @@ function buildInstructions(
   options: MistralSendOptions,
 ): string {
   const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
-  const allowWebSearch = websearchEnabled() &&
-    shouldUseMistralWebSearch(payload.message);
   const localAccessInstruction =
     hasLocalAccess(payload) && localFilesystemIntent
       ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
@@ -743,12 +894,7 @@ function buildInstructions(
     options.personalityInstruction ??
       "You are Missy.",
     userIdentityInstruction(payload),
-    allowWebSearch
-      ? "You have access to web_search for this request because the user asked for current, live, recent, or specific web/page information. Use it only if needed, and do not use it for casual replies or GIF selection."
-      : "Mistral web_search is not available for this request. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.",
-    allowWebSearch
-      ? "Never answer with only a waiting/checking message. If you use web_search, provide the actual answer in this same response."
-      : "Answer from conversation context and general knowledge only.",
+    searchInstructionForPayload(payload),
     "Do not include sources or links unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
     localAccessInstruction,
   ];
@@ -871,12 +1017,7 @@ async function sendMistralConversationMessage(
   options: MistralSendOptions,
 ): Promise<string> {
   const builtinTools = getBuiltinToolsForPayload(payload, options);
-  const webSearchTools =
-    websearchEnabled() && shouldUseMistralWebSearch(payload.message)
-      ? [{ type: websearchToolType() }]
-      : [];
   const tools = [
-    ...webSearchTools,
     ...builtinTools,
     ...registry.tools,
   ];
@@ -1093,6 +1234,7 @@ export async function sendMistralMessage(
 ): Promise<string> {
   const sendOptions: MistralSendOptions = {
     ...options,
+    model: resolveMistralModelForPayload(payload, options),
     personalityInstruction: options.personalityInstruction ??
       await loadPersonalityInstruction(),
   };
@@ -1100,7 +1242,7 @@ export async function sendMistralMessage(
     ? { tools: [], entries: new Map() }
     : filterMcpToolsForPayload(await loadMcpTools(), payload);
 
-  if (websearchEnabled() && !hasVisionImages(payload)) {
+  if (conversationApiEnabled() && !hasVisionImages(payload)) {
     return await sendMistralConversationMessage(
       apiKey,
       payload,

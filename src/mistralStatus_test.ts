@@ -105,3 +105,25 @@ Deno.test("formats Mistral model availability status", () => {
     ].join("\n"),
   );
 });
+
+Deno.test("formats router model status as pseudo-model", () => {
+  assertEquals(
+    formatMistralModelStatus([
+      {
+        capabilities: {
+          completion_chat: true,
+        },
+        id: "mistral-small-latest",
+      },
+    ], "router"),
+    [
+      "Mistral model status",
+      "Current model: router (router mode)",
+      "Available models for this API key: 1",
+      "",
+      "Router mode resolves to a concrete model per request before calling Mistral.",
+      "",
+      "available: mistral-small-latest - chat",
+    ].join("\n"),
+  );
+});

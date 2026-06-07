@@ -22,7 +22,6 @@ import {
   agentToolActivityContent,
   createMessageAgentActivity,
   replyWithDiscordMessages,
-  sendTyping,
 } from "./discord.ts";
 import {
   buildHelpMessage,
@@ -134,7 +133,6 @@ export async function handleDirectMessage(message: Message): Promise<void> {
       await agentActivity.update(pendingLookupStatus);
     }
 
-    await sendTyping(message);
     const model = await getEffectiveModel(message.author.id);
     let reply = await sendMistralMessage(existingApiKey, {
       message: mistralMessage,

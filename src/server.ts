@@ -18,7 +18,6 @@ import {
   agentToolActivityContent,
   createMessageAgentActivity,
   replyWithDiscordMessages,
-  sendTyping,
 } from "./discord.ts";
 import {
   buildHelpMessage,
@@ -177,7 +176,6 @@ export async function handleServerMessage(
       await agentActivity.update(pendingLookupStatus);
     }
 
-    await sendTyping(message);
     const model = await getEffectiveModel(message.author.id);
     let reply = await sendMistralMessage(resolvedApiKey.apiKey, {
       message: mistralMessage,

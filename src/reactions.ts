@@ -7,7 +7,7 @@ import {
 } from "discord.js";
 import { getEffectiveApiKey, removeResolvedApiKey } from "./apiKeys.ts";
 import { appendConversationTurn, getConversationContext } from "./context.ts";
-import { replyWithDiscordMessages, sendTyping } from "./discord.ts";
+import { replyWithDiscordMessages } from "./discord.ts";
 import {
   formatMediaAttachments,
   MediaAttachment,
@@ -194,8 +194,6 @@ export async function handleMessageReaction(
   const prompt = buildReactionPrompt(reaction, resolvedUser, message);
 
   try {
-    await sendTyping(message);
-
     const model = await getEffectiveModel(resolvedUser.id);
     const displayName = await reactionUserDisplayName(message, resolvedUser);
     const reply = await sendMistralMessage(resolvedApiKey.apiKey, {

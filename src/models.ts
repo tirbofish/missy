@@ -10,6 +10,7 @@ type ModelStore = {
 const dataDir = new URL("../data/", import.meta.url);
 const storeFile = new URL("models.json", dataDir);
 const DEFAULT_MISTRAL_MODEL = "mistral-small-latest";
+export const MISTRAL_ROUTER_MODEL = "router";
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/;
 
 let cachedStore: ModelStore | undefined;
@@ -41,6 +42,10 @@ async function saveStore(store: ModelStore): Promise<void> {
 
 export function defaultMistralModel(): string {
   return Deno.env.get("MISTRAL_MODEL") ?? DEFAULT_MISTRAL_MODEL;
+}
+
+export function isRouterModel(model: string): boolean {
+  return model.trim().toLowerCase() === MISTRAL_ROUTER_MODEL;
 }
 
 export function parseModelCandidate(content: string): string | undefined {

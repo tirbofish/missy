@@ -32,7 +32,7 @@ export function buildHelpMessage(hasLocalAccess: boolean): string {
     "- `/missy message:<text>`: chat with Missy.",
     "- `/clear`: clear this conversation context and set a channel-history clear point.",
     "- `/set-api-key api-key:<key>`: save a server key in servers, or your personal key in DMs.",
-    "- `/model`: view or change your Mistral model.",
+    "- `/model`: view or change your Mistral model, including `router` mode.",
     "- `/status`: check Mistral models available to the saved API key.",
     "- `/api-key-status`: check whether this server or DM has a saved key.",
     "- `/remove-api-key`: remove this server's key in servers, or your personal key in DMs.",
@@ -40,7 +40,7 @@ export function buildHelpMessage(hasLocalAccess: boolean): string {
     "- `/mcp-add`: admin-only MCP server configuration.",
     "- `/shutdown`: stop Missy, restricted to configured shutdown users.",
     "- In servers, mention Missy, reply to Missy, or use `!M!<message>`.",
-    "- Missy can use Mistral web search for current information.",
+    "- Missy can use Brave Search for current web, image, video, and news lookups when `BRAVE_SEARCH_API_KEY` is set.",
     "- Missy may react to a message or intentionally send no text reply when that is the better response.",
     desktopHelp,
   ].join("\n");

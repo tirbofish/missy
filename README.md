@@ -1,7 +1,7 @@
 # Missy
 
-Missy is a Discord bot powered by Mistral. By default it uses Mistral's
-Conversations API with built-in web search enabled.
+Missy is a Discord bot powered by Mistral. Current web, image, video, and news
+lookups are handled through the Brave Search API.
 
 this is vibe-coded, dont use in real-life scenarios. its for my own use.
 
@@ -16,25 +16,32 @@ this is vibe-coded, dont use in real-life scenarios. its for my own use.
    copies of each command in the server. Set
    `DISCORD_REGISTER_GLOBAL_COMMANDS=1` only if you intentionally want both
    guild-scoped and global slash commands.
-4. Optionally set `MISTRAL_MODEL`; it defaults to `mistral-small-latest`.
-5. Optionally set `MISTRAL_ENABLE_WEBSEARCH=0` to use chat completions without
-   Mistral's built-in web search. `MISTRAL_WEBSEARCH_TOOL` can be set to
-   `web_search` or `web_search_premium`.
-6. Optionally set `DISCORD_CONTEXT_MESSAGES`; it defaults to `20` and controls
+4. Optionally set `MISTRAL_MODEL`; it defaults to `mistral-small-latest`. Set it
+   to `router` to let Missy choose a concrete model per request. Router targets
+   can be changed with `MISTRAL_ROUTER_FAST_MODEL`,
+   `MISTRAL_ROUTER_GENERAL_MODEL`, `MISTRAL_ROUTER_TOOL_MODEL`,
+   `MISTRAL_ROUTER_VISION_MODEL`, and `MISTRAL_ROUTER_REASONING_MODEL`.
+5. Set `BRAVE_SEARCH_API_KEY` to enable current web, image, video, and news
+   lookups through Brave Search. Optionally set `BRAVE_ENABLE_SEARCH=0` to
+   disable Brave Search tools, or set `BRAVE_SEARCH_COUNTRY`,
+   `BRAVE_SEARCH_LANG`, and `BRAVE_SEARCH_UI_LANG` to change search defaults.
+6. Optionally set `MISTRAL_USE_CONVERSATIONS=1` to use Mistral's Conversations
+   API for non-vision messages. Search still goes through Brave tools.
+7. Optionally set `DISCORD_CONTEXT_MESSAGES`; it defaults to `20` and controls
    how many recent channel messages are sent as context when Missy is mentioned.
-7. Optionally set `GIPHY_API_KEY` to let Missy resolve GIF search replies
+8. Optionally set `GIPHY_API_KEY` to let Missy resolve GIF search replies
    through the GIPHY API.
-8. Set `MCP_ADMIN_USER_IDS` and/or `MCP_ADMIN_ROLE_IDS` to Discord users or
+9. Set `MCP_ADMIN_USER_IDS` and/or `MCP_ADMIN_ROLE_IDS` to Discord users or
    roles that may add local MCP servers through slash commands.
-9. Set `MISSY_LOCAL_ACCESS_USER_IDS` and/or `MISSY_LOCAL_ACCESS_ROLE_IDS` to
-   Discord users or roles that may use local computer and filesystem tools. If
-   omitted, no Discord user can access local files, including in DMs.
-10. Set `MISSY_SHUTDOWN_USER_IDS` and/or `MISSY_SHUTDOWN_ROLE_IDS` to Discord
+10. Set `MISSY_LOCAL_ACCESS_USER_IDS` and/or `MISSY_LOCAL_ACCESS_ROLE_IDS` to
+    Discord users or roles that may use local computer and filesystem tools. If
+    omitted, no Discord user can access local files, including in DMs.
+11. Set `MISSY_SHUTDOWN_USER_IDS` and/or `MISSY_SHUTDOWN_ROLE_IDS` to Discord
     users or roles that may stop the bot with `/shutdown`. If omitted, no
     Discord user can shut the bot down from Discord.
-11. In the Discord Developer Portal, enable the Message Content intent. Server
+12. In the Discord Developer Portal, enable the Message Content intent. Server
     Members intent is not required.
-12. Invite the bot to a server with the `bot` and `applications.commands`
+13. Invite the bot to a server with the `bot` and `applications.commands`
     scopes. It needs permission to view channels, send messages, read message
     history, and use slash commands.
 
@@ -85,12 +92,12 @@ current command set again.
 - Missy can resolve GIF replies through GIPHY when `GIPHY_API_KEY` is set.
 - Image attachments are sent to Mistral vision-capable Chat Completions models
   as structured image inputs.
-- Missy can search the web through Mistral's built-in `web_search` tool when
-  answering recent/current-information questions.
+- Missy can search the web, images, videos, and news through Brave Search when
+  answering recent/current-information or explicit online lookup questions.
 - Use `/missy message:<text>` for an ephemeral slash-command chat.
 - Use `/model` to see your current Mistral model, `/model model:<name>` to set a
-  per-user model override, or `/model model:default` to return to
-  `MISTRAL_MODEL`.
+  per-user model override, `/model model:router` to route per request, or
+  `/model model:default` to return to `MISTRAL_MODEL`.
 - Use `/status` to check which Mistral models are available to the saved API key
   and whether your current model is listed.
 - Use `/analyze-history` to ask Missy to inspect recent messages in the current

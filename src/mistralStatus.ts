@@ -128,11 +128,14 @@ export function formatMistralModelStatus(
   models: readonly MistralModelStatus[],
   currentModel: string,
 ): string {
+  const routerMode = currentModel.trim().toLowerCase() === "router";
   const listedModelIds = new Set(models.flatMap((model) => [
     model.id,
     ...(model.aliases ?? []),
   ]));
-  const currentStatus = listedModelIds.has(currentModel)
+  const currentStatus = routerMode
+    ? "router mode"
+    : listedModelIds.has(currentModel)
     ? "available"
     : "not listed for this API key";
   const lines = [
@@ -145,6 +148,13 @@ export function formatMistralModelStatus(
   if (models.length === 0) {
     lines.push("No models were returned by Mistral for this API key.");
     return lines.join("\n");
+  }
+
+  if (routerMode) {
+    lines.push(
+      "Router mode resolves to a concrete model per request before calling Mistral.",
+    );
+    lines.push("");
   }
 
   for (const model of models) {
