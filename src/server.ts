@@ -6,14 +6,14 @@ import {
   getConversationContext,
 } from "./context.ts";
 import { getMessageConversationId } from "./conversation.ts";
-import { sendTyping } from "./discord.ts";
+import { replyWithDiscordMessages, sendTyping } from "./discord.ts";
+import { buildHelpMessage, isHelpCommand } from "./help.ts";
 import { buildDiscordHistoryContext } from "./history.ts";
 import {
   buildMessageContent,
   hasMessageCommandPrefix,
 } from "./messageContent.ts";
 import {
-  fitDiscordMessage,
   MistralApiError,
   sendMistralMessage,
 } from "./mistral.ts";
@@ -57,12 +57,6 @@ export async function handleServerMessage(
     return;
   }
 
-  const apiKey = await getApiKey(message.author.id);
-  if (!apiKey) {
-    await message.reply(NEEDS_API_KEY_MESSAGE);
-    return;
-  }
-
   const mistralMessage = buildMessageContent(message, botUserId);
   if (!mistralMessage) {
     await message.reply("Send me a message for Missy.");
@@ -71,9 +65,20 @@ export async function handleServerMessage(
 
   const conversationId = getMessageConversationId(message);
 
+  if (isHelpCommand(mistralMessage)) {
+    await message.reply(buildHelpMessage(false));
+    return;
+  }
+
   if (isClearCommand(mistralMessage)) {
     await clearConversationContext(conversationId);
     await message.reply("Cleared this conversation context.");
+    return;
+  }
+
+  const apiKey = await getApiKey(message.author.id);
+  if (!apiKey) {
+    await message.reply(NEEDS_API_KEY_MESSAGE);
     return;
   }
 
@@ -95,7 +100,7 @@ export async function handleServerMessage(
       discordHistory,
     });
     await appendConversationTurn(conversationId, mistralMessage, reply);
-    await message.reply(fitDiscordMessage(reply));
+    await replyWithDiscordMessages(message, reply);
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
       await removeApiKey(message.author.id);

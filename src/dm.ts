@@ -11,10 +11,14 @@ import {
   getConversationContext,
 } from "./context.ts";
 import { getMessageConversationId } from "./conversation.ts";
-import { sendTyping } from "./discord.ts";
+import {
+  replyWithDiscordMessages,
+  requestMessageFileOperationApproval,
+  sendTyping,
+} from "./discord.ts";
+import { buildHelpMessage, isHelpCommand } from "./help.ts";
 import { buildMessageContent } from "./messageContent.ts";
 import {
-  fitDiscordMessage,
   MistralApiError,
   sendMistralMessage,
 } from "./mistral.ts";
@@ -25,6 +29,12 @@ const NEEDS_API_KEY_MESSAGE =
 export async function handleDirectMessage(message: Message): Promise<void> {
   const existingApiKey = await getApiKey(message.author.id);
   const conversationId = getMessageConversationId(message);
+  const messageContent = buildMessageContent(message);
+
+  if (isHelpCommand(messageContent)) {
+    await message.reply(buildHelpMessage(true));
+    return;
+  }
 
   if (!existingApiKey) {
     const apiKey = parseApiKeyCandidate(message.content);
@@ -39,7 +49,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     return;
   }
 
-  const mistralMessage = buildMessageContent(message);
+  const mistralMessage = messageContent;
   if (!mistralMessage) {
     await message.reply("Send me a message for Missy.");
     return;
@@ -64,9 +74,11 @@ export async function handleDirectMessage(message: Message): Promise<void> {
       },
     }, {
       context,
+      requestFileOperationApproval: (request) =>
+        requestMessageFileOperationApproval(message, request),
     });
     await appendConversationTurn(conversationId, mistralMessage, reply);
-    await message.reply(fitDiscordMessage(reply));
+    await replyWithDiscordMessages(message, reply);
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
       await removeApiKey(message.author.id);

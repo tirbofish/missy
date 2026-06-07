@@ -33,7 +33,7 @@ export type MistralToolDefinition = {
   };
 };
 
-type ToolRegistryEntry = {
+export type ToolRegistryEntry = {
   serverName: string;
   toolName: string;
 };
@@ -371,6 +371,32 @@ export async function loadMcpTools(): Promise<McpToolRegistry> {
     } catch (error) {
       console.error(`Could not load MCP server ${serverName}`, error);
     }
+  }
+
+  return { tools, entries };
+}
+
+export function filterMcpToolRegistry(
+  registry: McpToolRegistry,
+  include: (
+    functionName: string,
+    entry: ToolRegistryEntry,
+    tool: MistralToolDefinition,
+  ) => boolean,
+): McpToolRegistry {
+  const tools: MistralToolDefinition[] = [];
+  const entries = new Map<string, ToolRegistryEntry>();
+
+  for (const tool of registry.tools) {
+    const functionName = tool.function.name;
+    const entry = registry.entries.get(functionName);
+
+    if (!entry || !include(functionName, entry, tool)) {
+      continue;
+    }
+
+    tools.push(tool);
+    entries.set(functionName, entry);
   }
 
   return { tools, entries };

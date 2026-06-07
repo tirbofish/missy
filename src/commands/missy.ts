@@ -1,4 +1,8 @@
-import { ApplicationCommandOptionType, CommandInteraction } from "discord.js";
+import {
+  ApplicationCommandOptionType,
+  CommandInteraction,
+  InteractionContextType,
+} from "discord.js";
 import { Discord, Slash, SlashOption } from "discordx";
 import { canManageMcp, MCP_ADMIN_REQUIRED_MESSAGE } from "../admin.ts";
 import {
@@ -19,7 +23,11 @@ import {
   maxDiscordHistoryLimit,
 } from "../history.ts";
 import {
-  fitDiscordMessage,
+  editReplyWithDiscordMessages,
+  requestInteractionFileOperationApproval,
+} from "../discord.ts";
+import { buildHelpMessage } from "../help.ts";
+import {
   MistralApiError,
   sendMistralMessage,
 } from "../mistral.ts";
@@ -28,6 +36,10 @@ import { addMcpServer, McpServerConfig } from "../mcp.ts";
 const NO_API_KEY_MESSAGE =
   "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
 const MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
+const COMMAND_CONTEXTS = [
+  InteractionContextType.Guild,
+  InteractionContextType.BotDM,
+];
 
 function parseOptionalStringArray(value?: string): string[] | undefined {
   if (!value?.trim()) {
@@ -70,6 +82,7 @@ function parseOptionalStringRecord(
 @Discord()
 export class MissyCommands {
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Save your Mistral API key",
     name: "set-api-key",
   })
@@ -100,6 +113,7 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Chat with Missy using Mistral",
     name: "missy",
   })
@@ -138,9 +152,13 @@ export class MissyCommands {
         },
       }, {
         context,
+        requestFileOperationApproval: !interaction.guildId
+          ? (request) =>
+            requestInteractionFileOperationApproval(interaction, request)
+          : undefined,
       });
       await appendConversationTurn(conversationId, message, reply);
-      await interaction.editReply(fitDiscordMessage(reply));
+      await editReplyWithDiscordMessages(interaction, reply);
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
         await removeApiKey(interaction.user.id);
@@ -156,6 +174,7 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Analyze recent messages from this Discord channel",
     name: "analyze-history",
   })
@@ -218,7 +237,7 @@ export class MissyCommands {
       });
 
       await appendConversationTurn(conversationId, prompt, reply);
-      await interaction.editReply(fitDiscordMessage(reply));
+      await editReplyWithDiscordMessages(interaction, reply);
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
         await removeApiKey(interaction.user.id);
@@ -236,6 +255,7 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Clear Missy's saved context for this conversation",
     name: "clear",
   })
@@ -253,6 +273,19 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "Show Missy's commands and available tools",
+    name: "help",
+  })
+  async help(interaction: CommandInteraction): Promise<void> {
+    await interaction.reply({
+      content: buildHelpMessage(!interaction.guildId),
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Add or replace a local stdio MCP server",
     name: "mcp-add",
   })
@@ -337,6 +370,7 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Check whether you have a saved Mistral API key",
     name: "api-key-status",
   })
@@ -351,6 +385,7 @@ export class MissyCommands {
   }
 
   @Slash({
+    contexts: COMMAND_CONTEXTS,
     description: "Remove your saved Mistral API key",
     name: "remove-api-key",
   })

@@ -4,6 +4,18 @@
       "command": "node",
       "args": ["path/to/your/mcp-server.js"],
       "env": {}
+    },
+    "agent_sdk": {
+      "command": "deno",
+      "args": [
+        "run",
+        "-E",
+        "-R",
+        "--allow-run=powershell",
+        "--allow-net=api.openai.com",
+        "scripts/mcp/agent-sdk-google-computer.ts"
+      ],
+      "env": {}
     }
   }
 }

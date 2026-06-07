@@ -1,10 +1,11 @@
 {
   "tasks": {
-    "dev": "deno run -E -R --allow-write=./data,./mcp.json --allow-run -N --env-file=.env --watch src/main.ts",
-    "check": "deno check --allow-import src/main.ts src/commands/missy.ts scripts/commands.ts",
+    "dev": "deno run -E -R --allow-write --allow-run -N --env-file=.env --watch src/main.ts",
+    "check": "deno check --allow-import src/main.ts src/commands/missy.ts scripts/commands.ts scripts/mcp/agent-sdk-google-computer.ts",
     "commands:clear-global": "deno run -E -N --env-file=.env scripts/commands.ts clear-global",
     "commands:clear-guilds": "deno run -E -N --env-file=.env scripts/commands.ts clear-guilds",
-    "commands:clear-all": "deno run -E -N --env-file=.env scripts/commands.ts clear-all"
+    "commands:clear-all": "deno run -E -N --env-file=.env scripts/commands.ts clear-all",
+    "mcp:agent-sdk": "deno run -E -R --allow-run=powershell --allow-net=api.openai.com scripts/mcp/agent-sdk-google-computer.ts"
   },
   "compilerOptions": {
     "emitDecoratorMetadata": true,

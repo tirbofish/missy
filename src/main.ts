@@ -47,9 +47,20 @@ export class Main {
     Main.client.once(Events.ClientReady, async () => {
       await Main.client.initApplicationCommands();
 
+      if (botGuilds.length) {
+        const guildScopedBotGuilds = Main.client.botGuilds;
+        Main.client.botGuilds = [];
+
+        try {
+          await Main.client.initApplicationCommands();
+        } finally {
+          Main.client.botGuilds = guildScopedBotGuilds;
+        }
+      }
+
       console.log(
         botGuilds.length
-          ? `Bot started with guild-scoped commands for ${botGuilds.join(", ")}`
+          ? `Bot started with guild-scoped commands for ${botGuilds.join(", ")} and global commands for DMs`
           : "Bot started with global commands",
       );
     });
