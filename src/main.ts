@@ -3,6 +3,7 @@ import { Events, IntentsBitField, Partials } from "discord.js";
 import { Client } from "discordx";
 import process from "node:process";
 import { handleDirectMessage } from "./dm.ts";
+import { handleMessageReaction } from "./reactions.ts";
 import { handleServerMessage } from "./server.ts";
 
 export class Main {
@@ -20,11 +21,18 @@ export class Main {
       intents: [
         IntentsBitField.Flags.Guilds,
         IntentsBitField.Flags.GuildMessages,
+        IntentsBitField.Flags.GuildMessageReactions,
         IntentsBitField.Flags.DirectMessages,
+        IntentsBitField.Flags.DirectMessageReactions,
         IntentsBitField.Flags.MessageContent,
       ],
       // enable partials to receive direct messages
-      partials: [Partials.Channel, Partials.Message],
+      partials: [
+        Partials.Channel,
+        Partials.Message,
+        Partials.Reaction,
+        Partials.User,
+      ],
 
       silent: false,
     });
@@ -76,6 +84,10 @@ export class Main {
 
     Main.client.on(Events.InteractionCreate, (interaction) => {
       void Main.client.executeInteraction(interaction);
+    });
+
+    Main.client.on(Events.MessageReactionAdd, (reaction, user) => {
+      void handleMessageReaction(reaction, user);
     });
 
     await importx(`${dirname(import.meta.url)}/commands/**/*.{js,ts}`);
