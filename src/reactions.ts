@@ -8,6 +8,11 @@ import {
 import { getEffectiveApiKey, removeResolvedApiKey } from "./apiKeys.ts";
 import { appendConversationTurn, getConversationContext } from "./context.ts";
 import { replyWithDiscordMessages, sendTyping } from "./discord.ts";
+import {
+  formatMediaAttachments,
+  MediaAttachment,
+  visionImageUrls,
+} from "./media.ts";
 import { MistralApiError, sendMistralMessage } from "./mistral.ts";
 import { getEffectiveModel } from "./models.ts";
 
@@ -55,46 +60,80 @@ function reactionEmojiLabel(reaction: ReactionPayload): string {
   return reaction.emoji.toString() || reaction.emoji.name || "a reaction";
 }
 
+function reactionMeaning(emoji: string): string | undefined {
+  if (emoji === "\u{1F345}") {
+    return "Interpret the tomato emoji as throwing a tomato at the message: playful old-timey theater booing, heckling, or disapproval, not literal tomato discussion.";
+  }
+
+  return emoji === "🍅"
+    ? "Interpret 🍅 as throwing a tomato at the message: playful old-timey theater booing, heckling, or disapproval, not literal tomato discussion."
+    : undefined;
+}
+
 export function buildReactionPrompt(
   reaction: ReactionPayload,
   user: ReactionUser,
   message: Message,
 ): string {
   const messageContent = message.content.trim() || "[no text content]";
-  const attachments = [...message.attachments.values()].map((attachment) =>
-    attachment.url
-  );
+  const attachments = [...message.attachments.values()].map((attachment) => ({
+    contentType: attachment.contentType,
+    name: attachment.name,
+    size: attachment.size,
+    url: attachment.url,
+  }));
+  const ownMessage = message.author.id === message.client.user?.id;
 
   return formatReactionPrompt({
-    attachmentUrls: attachments,
+    attachments,
     emoji: reactionEmojiLabel(reaction),
     messageAuthor: messageAuthorLabel(message),
     messageContent,
+    ownMessage,
     user: userLabel(user),
   });
 }
 
 export function formatReactionPrompt(input: {
-  attachmentUrls?: readonly string[];
+  attachments?: readonly MediaAttachment[];
   emoji: string;
   messageAuthor: string;
   messageContent: string;
+  ownMessage?: boolean;
   user: string;
 }): string {
   const messageContent = input.messageContent.trim() || "[no text content]";
-  const attachmentUrls = input.attachmentUrls ?? [];
-  const attachmentBlock = attachmentUrls.length
-    ? `\nMessage attachments:\n${attachmentUrls.join("\n")}`
-    : "";
+  const attachmentBlock = formatMediaAttachments(input.attachments ?? []);
+  const ownMessageLine = input.ownMessage
+    ? "The reacted message is one of your own messages."
+    : undefined;
 
-  return [
+  const promptParts = [
     "Discord reaction event.",
-    `${input.user} reacted with ${input.emoji} to this message from ${input.messageAuthor}:`,
-    messageContent,
-    attachmentBlock,
+    `${input.user} replied to this message from ${input.messageAuthor} with ${input.emoji}:`,
+  ];
+
+  if (ownMessageLine) {
+    promptParts.push(ownMessageLine);
+  }
+
+  const meaning = reactionMeaning(input.emoji);
+  if (meaning) {
+    promptParts.push(meaning);
+  }
+
+  promptParts.push(messageContent);
+
+  if (attachmentBlock) {
+    promptParts.push(attachmentBlock);
+  }
+
+  promptParts.push(
     "",
     "Reply only if the reaction deserves a response. If no text reply is better, use MISSY_NO_REPLY. If reacting is better, use MISSY_REACT: <emoji>.",
-  ].join("\n").trim();
+  );
+
+  return promptParts.join("\n").trim();
 }
 
 async function fetchReactionMessage(
@@ -160,6 +199,14 @@ export async function handleMessageReaction(
     const model = await getEffectiveModel(resolvedUser.id);
     const displayName = await reactionUserDisplayName(message, resolvedUser);
     const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+      imageUrls: visionImageUrls(
+        [...message.attachments.values()].map((attachment) => ({
+          contentType: attachment.contentType,
+          name: attachment.name,
+          size: attachment.size,
+          url: attachment.url,
+        })),
+      ),
       message: prompt,
       source: message.guildId ? "discord-server" : "discord-dm",
       discord: {

@@ -24,4 +24,4 @@ export function canAccessLocalComputer(actor: PermissionActor): boolean {
 }
 
 export const LOCAL_ACCESS_REQUIRED_MESSAGE =
-  `Local Desktop and filesystem tools are disabled for this Discord user. Add their user ID to ${LOCAL_ACCESS_ENV} or one of their role IDs to ${LOCAL_ACCESS_ROLES_ENV} in .env to allow access.`;
+  "yeah no, you don't have permission to touch the local filesystem. someone with access to the bot's config would need to add you";

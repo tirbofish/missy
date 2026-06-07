@@ -22,17 +22,19 @@ this is vibe-coded, dont use in real-life scenarios. its for my own use.
    `web_search` or `web_search_premium`.
 6. Optionally set `DISCORD_CONTEXT_MESSAGES`; it defaults to `20` and controls
    how many recent channel messages are sent as context when Missy is mentioned.
-7. Set `MCP_ADMIN_USER_IDS` and/or `MCP_ADMIN_ROLE_IDS` to Discord users or
+7. Optionally set `GIPHY_API_KEY` to let Missy resolve GIF search replies
+   through the GIPHY API.
+8. Set `MCP_ADMIN_USER_IDS` and/or `MCP_ADMIN_ROLE_IDS` to Discord users or
    roles that may add local MCP servers through slash commands.
-8. Set `MISSY_LOCAL_ACCESS_USER_IDS` and/or `MISSY_LOCAL_ACCESS_ROLE_IDS` to
+9. Set `MISSY_LOCAL_ACCESS_USER_IDS` and/or `MISSY_LOCAL_ACCESS_ROLE_IDS` to
    Discord users or roles that may use local computer and filesystem tools. If
    omitted, no Discord user can access local files, including in DMs.
-9. Set `MISSY_SHUTDOWN_USER_IDS` and/or `MISSY_SHUTDOWN_ROLE_IDS` to Discord
-   users or roles that may stop the bot with `/shutdown`. If omitted, no Discord
-   user can shut the bot down from Discord.
-10. In the Discord Developer Portal, enable the Message Content intent. Server
+10. Set `MISSY_SHUTDOWN_USER_IDS` and/or `MISSY_SHUTDOWN_ROLE_IDS` to Discord
+    users or roles that may stop the bot with `/shutdown`. If omitted, no
+    Discord user can shut the bot down from Discord.
+11. In the Discord Developer Portal, enable the Message Content intent. Server
     Members intent is not required.
-11. Invite the bot to a server with the `bot` and `applications.commands`
+12. Invite the bot to a server with the `bot` and `applications.commands`
     scopes. It needs permission to view channels, send messages, read message
     history, and use slash commands.
 
@@ -80,12 +82,17 @@ current command set again.
   model separates sections with `MISSY_MESSAGE_BREAK`.
 - Missy can react to the triggering message with `MISSY_REACT: <emoji>` and can
   intentionally send no text reply with `MISSY_NO_REPLY`.
+- Missy can resolve GIF replies through GIPHY when `GIPHY_API_KEY` is set.
+- Image attachments are sent to Mistral vision-capable Chat Completions models
+  as structured image inputs.
 - Missy can search the web through Mistral's built-in `web_search` tool when
   answering recent/current-information questions.
 - Use `/missy message:<text>` for an ephemeral slash-command chat.
 - Use `/model` to see your current Mistral model, `/model model:<name>` to set a
   per-user model override, or `/model model:default` to return to
   `MISTRAL_MODEL`.
+- Use `/status` to check which Mistral models are available to the saved API key
+  and whether your current model is listed.
 - Use `/analyze-history` to ask Missy to inspect recent messages in the current
   channel. The optional `limit` can fetch up to 100 messages.
 - Use `/clear` to clear Missy's saved context for your current DM or server
@@ -104,12 +111,13 @@ current command set again.
   `MISSY_LOCAL_ACCESS_ROLE_IDS` can use local computer and filesystem tools from
   DMs or servers. Missy can stat, list, recursively find, read, copy, create
   folders, write text files, move/rename, overwrite, delete local files/folders,
-  and use a local Deno REPL for compound file tasks anywhere Deno has OS
-  permission, including paths such as `D:\`. The REPL starts without local
-  permissions; when it requests read/write/run/net/env access, that permission
-  is sent to chat for check/cross approval before rerunning with only the
-  approved scoped Deno flag. Users not listed have no local access, including in
-  DMs.
+  upload selected local files into Discord, and use a local Deno REPL for
+  compound file tasks anywhere Deno has OS permission, including paths such as
+  `D:\`. The REPL starts without local permissions; when it requests
+  read/write/run/net/env access, that permission is sent to chat for check/cross
+  approval before rerunning with only the approved scoped Deno flag. Local file
+  uploads also ask for read approval first. Users not listed have no local
+  access, including in DMs.
 
 ## Personality
 

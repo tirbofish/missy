@@ -36,11 +36,16 @@ import {
 } from "../discordActor.ts";
 import { canAccessLocalComputer } from "../localAccess.ts";
 import {
+  agentToolActivityContent,
+  createInteractionAgentActivity,
   editReplyWithDiscordMessages,
-  requestInteractionFileOperationApproval,
 } from "../discord.ts";
 import { buildHelpMessage } from "../help.ts";
 import { MistralApiError, sendMistralMessage } from "../mistral.ts";
+import {
+  formatMistralModelStatus,
+  listMistralModels,
+} from "../mistralStatus.ts";
 import { addMcpServer, McpServerConfig } from "../mcp.ts";
 import {
   clearUserModel,
@@ -219,6 +224,7 @@ export class MissyCommands {
     try {
       const conversationId = getInteractionConversationId(interaction);
       const actor = actorFromInteraction(interaction);
+      const agentActivity = createInteractionAgentActivity(interaction);
       const context = shouldUsePriorConversation(message)
         ? await getConversationContext(conversationId)
         : [];
@@ -237,13 +243,23 @@ export class MissyCommands {
       }, {
         context,
         model,
+        onToolActivity: (activity) =>
+          agentActivity.update(agentToolActivityContent(activity)),
         requestFileOperationApproval: canAccessLocalComputer(actor)
-          ? (request) =>
-            requestInteractionFileOperationApproval(interaction, request)
+          ? (request) => agentActivity.requestFileOperationApproval(request)
           : undefined,
       });
       await appendConversationTurn(conversationId, message, reply);
-      await editReplyWithDiscordMessages(interaction, reply);
+      const finalReplySent = await editReplyWithDiscordMessages(
+        interaction,
+        reply,
+        {
+          requestFileOperationApproval: canAccessLocalComputer(actor)
+            ? (request) => agentActivity.requestFileOperationApproval(request)
+            : undefined,
+        },
+      );
+      await agentActivity.finish(finalReplySent);
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
         await removeResolvedApiKey(resolvedApiKey);
@@ -526,6 +542,48 @@ export class MissyCommands {
           : "Could not add that MCP server.",
         ephemeral: true,
       });
+    }
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "Check Mistral model availability for the saved API key",
+    name: "status",
+  })
+  async modelStatus(interaction: CommandInteraction): Promise<void> {
+    const resolvedApiKey = await getInteractionApiKey(interaction);
+
+    if (!resolvedApiKey) {
+      await interaction.reply({
+        content: NO_API_KEY_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const [models, currentModel] = await Promise.all([
+        listMistralModels(resolvedApiKey.apiKey),
+        getEffectiveModel(interaction.user.id),
+      ]);
+
+      await editReplyWithDiscordMessages(
+        interaction,
+        formatMistralModelStatus(models, currentModel),
+      );
+    } catch (error) {
+      if (error instanceof MistralApiError && error.status === 401) {
+        await removeResolvedApiKey(resolvedApiKey);
+        await interaction.editReply(rejectedApiKeyMessage(resolvedApiKey));
+        return;
+      }
+
+      console.error(error);
+      await interaction.editReply(
+        "Missy couldn't reach Mistral's model status endpoint right now.",
+      );
     }
   }
 

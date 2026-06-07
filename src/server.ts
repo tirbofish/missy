@@ -5,7 +5,6 @@ import {
   clearConversationContext,
   getConversationClearPoint,
   getConversationContext,
-  replaceLastAssistantMessage,
 } from "./context.ts";
 import { shouldUsePriorConversation } from "./contextIntent.ts";
 import { getMessageConversationId } from "./conversation.ts";
@@ -16,8 +15,9 @@ import {
 } from "./currentLookup.ts";
 import { actorFromMessage, displayNameFromMessage } from "./discordActor.ts";
 import {
+  agentToolActivityContent,
+  createMessageAgentActivity,
   replyWithDiscordMessages,
-  requestMessageFileOperationApproval,
   sendTyping,
 } from "./discord.ts";
 import {
@@ -33,6 +33,8 @@ import {
 import { canAccessLocalComputer } from "./localAccess.ts";
 import {
   buildMessageContent,
+  buildMessageContentWithReplyContext,
+  buildMessageImageUrlsWithReplyContext,
   hasMessageCommandPrefix,
 } from "./messageContent.ts";
 import { MistralApiError, sendMistralMessage } from "./mistral.ts";
@@ -77,76 +79,81 @@ export async function handleServerMessage(
   message: Message,
   botUserId: string,
 ): Promise<void> {
-  const mentionedBot = message.mentions.users.has(botUserId);
-  const prefixedCommand = hasMessageCommandPrefix(message.content);
-  const repliedToBot = mentionedBot || prefixedCommand
-    ? false
-    : await isReplyToBot(message, botUserId);
+  try {
+    const mentionedBot = message.mentions.users.has(botUserId);
+    const prefixedCommand = hasMessageCommandPrefix(message.content);
+    const repliedToBot = mentionedBot || prefixedCommand
+      ? false
+      : await isReplyToBot(message, botUserId);
 
-  if (!mentionedBot && !repliedToBot && !prefixedCommand) {
-    return;
-  }
-
-  const mistralMessage = buildMessageContent(message, botUserId);
-  if (!mistralMessage) {
-    await message.reply("Send me a message for Missy.");
-    return;
-  }
-
-  const conversationId = getMessageConversationId(message);
-  const actor = actorFromMessage(message);
-
-  if (isHelpCommand(mistralMessage)) {
-    await message.reply(
-      buildHelpMessage(canAccessLocalComputer(actor)),
-    );
-    return;
-  }
-
-  if (isSystemPromptRequest(mistralMessage)) {
-    await message.reply(SYSTEM_PROMPT_DENIAL_MESSAGE);
-    return;
-  }
-
-  if (isClearCommand(mistralMessage)) {
-    await clearConversationContext(conversationId, {
-      createdAt: message.createdAt,
-      messageId: message.id,
-    });
-    await message.reply("Cleared this conversation context.");
-    return;
-  }
-
-  if (isShutdownCommand(mistralMessage)) {
-    if (!canShutdownBot(actor)) {
-      await message.reply(SHUTDOWN_REQUIRED_MESSAGE);
+    if (!mentionedBot && !repliedToBot && !prefixedCommand) {
       return;
     }
 
-    console.warn(JSON.stringify({
-      at: new Date().toISOString(),
-      channelId: message.channelId,
-      event: "shutdown_command",
-      guildId: message.guildId,
-      userId: message.author.id,
-      username: message.author.tag,
-      roleIds: actor.roleIds,
-    }));
-    await message.reply("Shutting down Missy now.");
-    shutdownBot(`Discord server command by ${message.author.id}`);
-    return;
-  }
+    const currentMessageContent = buildMessageContent(message, botUserId);
+    const mistralMessage = await buildMessageContentWithReplyContext(
+      message,
+      botUserId,
+    );
+    const imageUrls = await buildMessageImageUrlsWithReplyContext(message);
+    if (!mistralMessage) {
+      await message.reply("Send me a message for Missy.");
+      return;
+    }
 
-  const resolvedApiKey = await getEffectiveApiKey(
-    message.author.id,
-    message.guildId,
-  );
-  if (!resolvedApiKey) {
-    await message.reply(NEEDS_API_KEY_MESSAGE);
-    return;
-  }
+    const conversationId = getMessageConversationId(message);
+    const actor = actorFromMessage(message);
 
-  try {
+    if (isHelpCommand(currentMessageContent)) {
+      await message.reply(
+        buildHelpMessage(canAccessLocalComputer(actor)),
+      );
+      return;
+    }
+
+    if (isSystemPromptRequest(currentMessageContent)) {
+      await message.reply(SYSTEM_PROMPT_DENIAL_MESSAGE);
+      return;
+    }
+
+    if (isClearCommand(currentMessageContent)) {
+      await clearConversationContext(conversationId, {
+        createdAt: message.createdAt,
+        messageId: message.id,
+      });
+      await message.reply("Cleared this conversation context.");
+      return;
+    }
+
+    if (isShutdownCommand(currentMessageContent)) {
+      if (!canShutdownBot(actor)) {
+        await message.reply(SHUTDOWN_REQUIRED_MESSAGE);
+        return;
+      }
+
+      console.warn(JSON.stringify({
+        at: new Date().toISOString(),
+        channelId: message.channelId,
+        event: "shutdown_command",
+        guildId: message.guildId,
+        userId: message.author.id,
+        username: message.author.tag,
+        roleIds: actor.roleIds,
+      }));
+      await message.reply("Shutting down Missy now.");
+      shutdownBot(`Discord server command by ${message.author.id}`);
+      return;
+    }
+
+    const resolvedApiKey = await getEffectiveApiKey(
+      message.author.id,
+      message.guildId,
+    );
+    if (!resolvedApiKey) {
+      await message.reply(NEEDS_API_KEY_MESSAGE);
+      return;
+    }
+
     const isCurrentLookup = isCurrentLookupRequest(mistralMessage);
     const usePriorConversation = shouldUsePriorConversation(mistralMessage);
     const context = usePriorConversation
@@ -164,20 +171,17 @@ export async function handleServerMessage(
     const pendingLookupStatus = isCurrentLookup
       ? currentLookupStatusMessage(mistralMessage)
       : undefined;
+    const agentActivity = createMessageAgentActivity(message);
 
     if (pendingLookupStatus) {
-      await message.reply(pendingLookupStatus);
-      await appendConversationTurn(
-        conversationId,
-        mistralMessage,
-        pendingLookupStatus,
-      );
+      await agentActivity.update(pendingLookupStatus);
     }
 
     await sendTyping(message);
     const model = await getEffectiveModel(message.author.id);
     let reply = await sendMistralMessage(resolvedApiKey.apiKey, {
       message: mistralMessage,
+      imageUrls,
       source: "discord-server",
       discord: {
         userId: message.author.id,
@@ -191,8 +195,10 @@ export async function handleServerMessage(
       context,
       discordHistory,
       model,
+      onToolActivity: (activity) =>
+        agentActivity.update(agentToolActivityContent(activity)),
       requestFileOperationApproval: canAccessLocalComputer(actor)
-        ? (request) => requestMessageFileOperationApproval(message, request)
+        ? (request) => agentActivity.requestFileOperationApproval(request)
         : undefined,
     });
 
@@ -200,6 +206,7 @@ export async function handleServerMessage(
       reply = await sendMistralMessage(resolvedApiKey.apiKey, {
         message:
           `${mistralMessage}\n\nYou already sent a checking message. Answer now with your best current answer. Do not send another waiting/checking message.`,
+        imageUrls,
         source: "discord-server",
         discord: {
           userId: message.author.id,
@@ -213,35 +220,42 @@ export async function handleServerMessage(
         context,
         discordHistory,
         model,
+        onToolActivity: (activity) =>
+          agentActivity.update(agentToolActivityContent(activity)),
         requestFileOperationApproval: canAccessLocalComputer(actor)
-          ? (request) => requestMessageFileOperationApproval(message, request)
+          ? (request) => agentActivity.requestFileOperationApproval(request)
           : undefined,
       });
     }
 
-    if (pendingLookupStatus) {
-      const replaced = await replaceLastAssistantMessage(conversationId, reply);
+    await appendConversationTurn(conversationId, mistralMessage, reply);
 
-      if (!replaced) {
-        await appendConversationTurn(conversationId, mistralMessage, reply);
-      }
-    } else {
-      await appendConversationTurn(conversationId, mistralMessage, reply);
-    }
-
-    await replyWithDiscordMessages(message, reply);
+    const finalReplySent = await replyWithDiscordMessages(message, reply, {
+      requestFileOperationApproval: canAccessLocalComputer(actor)
+        ? (request) => agentActivity.requestFileOperationApproval(request)
+        : undefined,
+    });
+    await agentActivity.finish(finalReplySent);
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
-      await removeResolvedApiKey(resolvedApiKey);
+      const resolvedApiKey = await getEffectiveApiKey(
+        message.author.id,
+        message.guildId,
+      );
+      if (resolvedApiKey) {
+        await removeResolvedApiKey(resolvedApiKey);
+      }
       await message.reply(
-        resolvedApiKey.scope === "guild"
-          ? "Mistral rejected this server's API key, so I removed it. Run `/set-api-key` with a new key."
-          : "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.",
+        "Mistral rejected the API key, so I removed it. Run `/set-api-key` with a new key.",
       );
       return;
     }
 
     console.error(error);
-    await message.reply("Missy couldn't reach Mistral right now.");
+    try {
+      await message.reply("Missy couldn't reach Mistral right now.");
+    } catch {
+      // Message reply itself may fail if the original error was severe.
+    }
   }
 }

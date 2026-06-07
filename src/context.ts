@@ -1,3 +1,5 @@
+import { summarizeAssistantMediaContent } from "./media.ts";
+
 export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
@@ -54,11 +56,23 @@ function trimContext(messages: ConversationMessage[]): ConversationMessage[] {
   return messages.slice(-MAX_CONTEXT_MESSAGES);
 }
 
+function sanitizeConversationMessages(
+  messages: ConversationMessage[],
+): ConversationMessage[] {
+  return messages.map((message) =>
+    message.role === "assistant"
+      ? { ...message, content: summarizeAssistantMediaContent(message.content) }
+      : message
+  );
+}
+
 export async function getConversationContext(
   conversationId: string,
 ): Promise<ConversationMessage[]> {
   const store = await loadStore();
-  return store.conversations[conversationId]?.messages ?? [];
+  return sanitizeConversationMessages(
+    store.conversations[conversationId]?.messages ?? [],
+  );
 }
 
 export async function getConversationClearPoint(
@@ -92,7 +106,10 @@ export async function appendConversationTurn(
     messages: trimContext([
       ...existing,
       { role: "user", content: userMessage },
-      { role: "assistant", content: assistantMessage },
+      {
+        role: "assistant",
+        content: summarizeAssistantMediaContent(assistantMessage),
+      },
     ]),
     updatedAt: new Date().toISOString(),
   };
@@ -120,7 +137,7 @@ export async function replaceLastAssistantMessage(
 
   messages[messages.length - 1] = {
     role: "assistant",
-    content: assistantMessage,
+    content: summarizeAssistantMediaContent(assistantMessage),
   };
   store.conversations[conversationId] = {
     ...conversation,

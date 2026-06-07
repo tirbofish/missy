@@ -101,6 +101,7 @@ class McpConnection {
   private nextId = 1;
   private process: Deno.ChildProcess | undefined;
   private writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+  private startingPromise: Promise<void> | undefined;
   private pending = new Map<
     number,
     {
@@ -154,6 +155,22 @@ class McpConnection {
       return;
     }
 
+    if (this.startingPromise) {
+      await this.startingPromise;
+      return;
+    }
+
+    this.startingPromise = this.startConnection();
+
+    try {
+      await this.startingPromise;
+    } catch (error) {
+      this.startingPromise = undefined;
+      throw error;
+    }
+  }
+
+  private async startConnection(): Promise<void> {
     const command = new Deno.Command(this.config.command, {
       args: this.config.args ?? [],
       env: this.config.env,
@@ -266,7 +283,7 @@ class McpConnection {
   }
 
   private async ensureStartedForRequest(method: string): Promise<void> {
-    if (method === "initialize" || this.process) {
+    if (method === "initialize") {
       return;
     }
 

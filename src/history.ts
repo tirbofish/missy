@@ -1,4 +1,5 @@
 import { Collection, Message, Snowflake } from "discord.js";
+import { summarizeAssistantMediaContent } from "./media.ts";
 
 const DEFAULT_HISTORY_LIMIT = 20;
 const MAX_HISTORY_LIMIT = 100;
@@ -45,7 +46,10 @@ function formatMessage(message: Message): string {
   const author = message.author.bot
     ? `${message.author.tag} (bot)`
     : message.author.tag;
-  const content = message.cleanContent.trim();
+  const rawContent = message.cleanContent.trim();
+  const content = message.author.bot
+    ? summarizeAssistantMediaContent(rawContent)
+    : rawContent;
   const attachments = [...message.attachments.values()].map((attachment) =>
     attachment.url
   );

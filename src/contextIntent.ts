@@ -7,7 +7,7 @@ function wordCount(content: string): number {
 export function isStandaloneCasualMessage(content: string): boolean {
   const normalized = content.trim().toLowerCase().replace(/[!.?]+$/g, "");
 
-  return /^(hi|hello|hey|yo|sup|wass|what'?s up|howdy|gm|good morning|good afternoon|good evening|holla|holla at me|ping|test)$/
+  return /^(hi|hello|hey|yo|sup|wass|what'?s up|howdy|gm|good morning|good afternoon|good evening|holla|holla at me|ping|test|ha+|haha+|hahaha+|lol|lmao|lmfao|rofl)$/
     .test(normalized);
 }
 

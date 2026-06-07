@@ -43,13 +43,17 @@ export class Main {
       }
 
       if (!message.guild) {
-        void handleDirectMessage(message);
+        handleDirectMessage(message).catch((error) =>
+          console.error("Unhandled error in DM handler", error)
+        );
         return;
       }
 
       const botUserId = Main.client.user?.id;
       if (botUserId) {
-        void handleServerMessage(message, botUserId);
+        handleServerMessage(message, botUserId).catch((error) =>
+          console.error("Unhandled error in server handler", error)
+        );
       }
     });
 

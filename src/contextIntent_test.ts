@@ -8,6 +8,8 @@ Deno.test("standalone casual messages do not use prior context", () => {
   assertEquals(isStandaloneCasualMessage("holla at me"), true);
   assertEquals(shouldUsePriorConversation("holla at me"), false);
   assertEquals(shouldUsePriorConversation("hello"), false);
+  assertEquals(shouldUsePriorConversation("haha"), false);
+  assertEquals(shouldUsePriorConversation("lmao"), false);
 });
 
 Deno.test("follow-up messages use prior context", () => {
