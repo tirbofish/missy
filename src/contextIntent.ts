@@ -30,6 +30,13 @@ export function shouldUsePriorConversation(content: string): boolean {
   }
 
   if (
+    /\b(hurry up|im waiting|i'm waiting|still waiting|waiting on you|you checking|are you done|done yet|any update|update\?)\b/
+      .test(normalized)
+  ) {
+    return true;
+  }
+
+  if (
     /\b(cheaper|less expensive|not too expensive|closer|nearby|instead|same|similar|different|better|worse|narrow it down|make it|do that|that one|this one|those|these|them|it)\b/
       .test(normalized)
   ) {

@@ -100,6 +100,38 @@ export async function appendConversationTurn(
   await saveStore(store);
 }
 
+export async function replaceLastAssistantMessage(
+  conversationId: string,
+  assistantMessage: string,
+): Promise<boolean> {
+  const store = await loadStore();
+  const conversation = store.conversations[conversationId];
+
+  if (!conversation?.messages.length) {
+    return false;
+  }
+
+  const messages = [...conversation.messages];
+  const lastMessage = messages.at(-1);
+
+  if (lastMessage?.role !== "assistant") {
+    return false;
+  }
+
+  messages[messages.length - 1] = {
+    role: "assistant",
+    content: assistantMessage,
+  };
+  store.conversations[conversationId] = {
+    ...conversation,
+    messages,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveStore(store);
+  return true;
+}
+
 export async function clearConversationContext(
   conversationId: string,
   clearPoint?: ConversationClearPoint,

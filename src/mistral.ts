@@ -579,6 +579,7 @@ function buildInstructions(
       "You are Missy.",
     userIdentityInstruction(payload),
     "You have access to web_search for up-to-date information. Use it when the user asks about current events, recent facts, live information, or a specific webpage.",
+    "Never answer with only a waiting/checking message. If you use web_search, provide the actual answer in this same response.",
     "Do not include sources or links after using web_search unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
     localAccessInstruction,
   ];

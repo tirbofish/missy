@@ -17,4 +17,5 @@ Deno.test("follow-up messages use prior context", () => {
   );
   assertEquals(shouldUsePriorConversation("sydney"), true);
   assertEquals(shouldUsePriorConversation("look past your clear point"), true);
+  assertEquals(shouldUsePriorConversation("hurry up im waiting"), true);
 });

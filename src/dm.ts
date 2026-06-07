@@ -9,12 +9,14 @@ import {
   appendConversationTurn,
   clearConversationContext,
   getConversationContext,
+  replaceLastAssistantMessage,
 } from "./context.ts";
 import { shouldUsePriorConversation } from "./contextIntent.ts";
 import { getMessageConversationId } from "./conversation.ts";
 import {
   currentLookupStatusMessage,
   isCurrentLookupRequest,
+  isCurrentLookupWaitingOnlyResponse,
 } from "./currentLookup.ts";
 import { actorFromMessage, displayNameFromMessage } from "./discordActor.ts";
 import {
@@ -113,16 +115,26 @@ export async function handleDirectMessage(message: Message): Promise<void> {
   }
 
   try {
-    if (isCurrentLookupRequest(mistralMessage)) {
-      await message.reply(currentLookupStatusMessage(mistralMessage));
-    }
-
-    await sendTyping(message);
+    const isCurrentLookup = isCurrentLookupRequest(mistralMessage);
     const context = shouldUsePriorConversation(mistralMessage)
       ? await getConversationContext(conversationId)
       : [];
+    const pendingLookupStatus = isCurrentLookup
+      ? currentLookupStatusMessage(mistralMessage)
+      : undefined;
+
+    if (pendingLookupStatus) {
+      await message.reply(pendingLookupStatus);
+      await appendConversationTurn(
+        conversationId,
+        mistralMessage,
+        pendingLookupStatus,
+      );
+    }
+
+    await sendTyping(message);
     const model = await getEffectiveModel(message.author.id);
-    const reply = await sendMistralMessage(existingApiKey, {
+    let reply = await sendMistralMessage(existingApiKey, {
       message: mistralMessage,
       source: "discord-dm",
       discord: {
@@ -139,7 +151,38 @@ export async function handleDirectMessage(message: Message): Promise<void> {
         ? (request) => requestMessageFileOperationApproval(message, request)
         : undefined,
     });
-    await appendConversationTurn(conversationId, mistralMessage, reply);
+
+    if (isCurrentLookup && isCurrentLookupWaitingOnlyResponse(reply)) {
+      reply = await sendMistralMessage(existingApiKey, {
+        message:
+          `${mistralMessage}\n\nYou already sent a checking message. Answer now with your best current answer. Do not send another waiting/checking message.`,
+        source: "discord-dm",
+        discord: {
+          userId: message.author.id,
+          username: message.author.tag,
+          displayName: displayNameFromMessage(message),
+          channelId: message.channelId,
+          roleIds: actor.roleIds,
+        },
+      }, {
+        context,
+        model,
+        requestFileOperationApproval: canAccessLocalComputer(actor)
+          ? (request) => requestMessageFileOperationApproval(message, request)
+          : undefined,
+      });
+    }
+
+    if (pendingLookupStatus) {
+      const replaced = await replaceLastAssistantMessage(conversationId, reply);
+
+      if (!replaced) {
+        await appendConversationTurn(conversationId, mistralMessage, reply);
+      }
+    } else {
+      await appendConversationTurn(conversationId, mistralMessage, reply);
+    }
+
     await replyWithDiscordMessages(message, reply);
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
