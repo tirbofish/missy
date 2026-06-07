@@ -1,8 +1,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import path from "node:path";
 import {
   callFilesystemTool,
   FILESYSTEM_TOOL_NAMES,
   filesystemTools,
+  resolveLocalPath,
 } from "./filesystemTools.ts";
 
 Deno.test("local Deno REPL tool is exposed to the model", () => {
@@ -12,6 +14,39 @@ Deno.test("local Deno REPL tool is exposed to the model", () => {
     ),
     true,
   );
+});
+
+Deno.test("filesystem paths expand home shorthand", () => {
+  const previousUserProfile = Deno.env.get("USERPROFILE");
+  const previousHome = Deno.env.get("HOME");
+  const testHome = path.resolve("tmp-test-home");
+
+  try {
+    Deno.env.set("USERPROFILE", testHome);
+    Deno.env.delete("HOME");
+
+    assertEquals(resolveLocalPath("~"), testHome);
+    assertEquals(
+      resolveLocalPath("~/Downloads"),
+      path.join(testHome, "Downloads"),
+    );
+    assertEquals(
+      resolveLocalPath("~\\Documents"),
+      path.join(testHome, "Documents"),
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      Deno.env.delete("USERPROFILE");
+    } else {
+      Deno.env.set("USERPROFILE", previousUserProfile);
+    }
+
+    if (previousHome === undefined) {
+      Deno.env.delete("HOME");
+    } else {
+      Deno.env.set("HOME", previousHome);
+    }
+  }
 });
 
 Deno.test("local Deno REPL tool requires approval for requested permissions", async () => {

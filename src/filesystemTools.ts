@@ -118,7 +118,8 @@ export const filesystemTools: MistralToolDefinition[] = [
           },
           path: {
             type: "string",
-            description: "Local folder to search recursively.",
+            description:
+              "Local folder to search recursively. Use ~ for the bot process user's home directory.",
           },
           query: {
             type: "string",
@@ -138,7 +139,11 @@ export const filesystemTools: MistralToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Local path to inspect." },
+          path: {
+            type: "string",
+            description:
+              "Local path to inspect. Use ~ for the bot process user's home directory.",
+          },
         },
         required: ["path"],
       },
@@ -153,7 +158,11 @@ export const filesystemTools: MistralToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Local directory path." },
+          path: {
+            type: "string",
+            description:
+              "Local directory path. Use ~ for the bot process user's home directory.",
+          },
           limit: {
             type: "integer",
             description: "Maximum entries to return. Defaults to 100.",
@@ -176,7 +185,11 @@ export const filesystemTools: MistralToolDefinition[] = [
             type: "integer",
             description: "Maximum bytes to read. Defaults to 20000.",
           },
-          path: { type: "string", description: "Local file path." },
+          path: {
+            type: "string",
+            description:
+              "Local file path. Use ~ for the bot process user's home directory.",
+          },
         },
         required: ["path"],
       },
@@ -193,11 +206,13 @@ export const filesystemTools: MistralToolDefinition[] = [
         properties: {
           destinationPath: {
             type: "string",
-            description: "New destination path. It must not already exist.",
+            description:
+              "New destination path. It must not already exist. Use ~ for the bot process user's home directory.",
           },
           sourcePath: {
             type: "string",
-            description: "Existing source file or folder path.",
+            description:
+              "Existing source file or folder path. Use ~ for the bot process user's home directory.",
           },
         },
         required: ["sourcePath", "destinationPath"],
@@ -213,7 +228,11 @@ export const filesystemTools: MistralToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Directory path to create." },
+          path: {
+            type: "string",
+            description:
+              "Directory path to create. Use ~ for the bot process user's home directory.",
+          },
         },
         required: ["path"],
       },
@@ -234,7 +253,11 @@ export const filesystemTools: MistralToolDefinition[] = [
             description:
               "Whether to overwrite an existing file. Defaults to false.",
           },
-          path: { type: "string", description: "Local file path." },
+          path: {
+            type: "string",
+            description:
+              "Local file path. Use ~ for the bot process user's home directory.",
+          },
         },
         required: ["path", "content"],
       },
@@ -252,11 +275,12 @@ export const filesystemTools: MistralToolDefinition[] = [
           destinationPath: {
             type: "string",
             description:
-              "Destination local path. It must not already exist; choose the final filename or folder name.",
+              "Destination local path. It must not already exist; choose the final filename or folder name. Use ~ for the bot process user's home directory.",
           },
           sourcePath: {
             type: "string",
-            description: "Existing local source file or folder path.",
+            description:
+              "Existing local source file or folder path. Use ~ for the bot process user's home directory.",
           },
         },
         required: ["sourcePath", "destinationPath"],
@@ -272,7 +296,11 @@ export const filesystemTools: MistralToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Local path to delete." },
+          path: {
+            type: "string",
+            description:
+              "Local path to delete. Use ~ for the bot process user's home directory.",
+          },
           recursive: {
             type: "boolean",
             description:
@@ -372,8 +400,30 @@ function requiredString(args: Record<string, unknown>, name: string): string {
   return value;
 }
 
-function resolveLocalPath(value: string): string {
-  return path.resolve(value);
+function homeDirectory(): string | undefined {
+  return Deno.env.get("USERPROFILE") || Deno.env.get("HOME") || undefined;
+}
+
+function expandHomePath(value: string): string {
+  const home = homeDirectory();
+
+  if (!home) {
+    return value;
+  }
+
+  if (value === "~") {
+    return home;
+  }
+
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(home, value.slice(2));
+  }
+
+  return value;
+}
+
+export function resolveLocalPath(value: string): string {
+  return path.resolve(expandHomePath(value));
 }
 
 function clampBytes(value: unknown, fallback: number): number {
