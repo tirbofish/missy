@@ -1,5 +1,5 @@
 import { Message } from "discord.js";
-import { getApiKey, removeApiKey } from "./apiKeys.ts";
+import { getEffectiveApiKey, removeResolvedApiKey } from "./apiKeys.ts";
 import {
   appendConversationTurn,
   clearConversationContext,
@@ -8,6 +8,10 @@ import {
 } from "./context.ts";
 import { shouldUsePriorConversation } from "./contextIntent.ts";
 import { getMessageConversationId } from "./conversation.ts";
+import {
+  currentLookupStatusMessage,
+  isCurrentLookupRequest,
+} from "./currentLookup.ts";
 import { actorFromMessage } from "./discordActor.ts";
 import {
   replyWithDiscordMessages,
@@ -38,7 +42,7 @@ import {
 } from "./shutdown.ts";
 
 const NEEDS_API_KEY_MESSAGE =
-  "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+  "Run `/set-api-key` once in this server first. You can create a Mistral API key at https://console.mistral.ai/api-keys";
 
 function isClearCommand(content: string): boolean {
   const command = content.trim().toLowerCase();
@@ -131,13 +135,20 @@ export async function handleServerMessage(
     return;
   }
 
-  const apiKey = await getApiKey(message.author.id);
-  if (!apiKey) {
+  const resolvedApiKey = await getEffectiveApiKey(
+    message.author.id,
+    message.guildId,
+  );
+  if (!resolvedApiKey) {
     await message.reply(NEEDS_API_KEY_MESSAGE);
     return;
   }
 
   try {
+    if (isCurrentLookupRequest(mistralMessage)) {
+      await message.reply(currentLookupStatusMessage(mistralMessage));
+    }
+
     await sendTyping(message);
     const usePriorConversation = shouldUsePriorConversation(mistralMessage);
     const context = usePriorConversation
@@ -153,7 +164,7 @@ export async function handleServerMessage(
       })
       : undefined;
     const model = await getEffectiveModel(message.author.id);
-    const reply = await sendMistralMessage(apiKey, {
+    const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
       message: mistralMessage,
       source: "discord-server",
       discord: {
@@ -175,9 +186,11 @@ export async function handleServerMessage(
     await replyWithDiscordMessages(message, reply);
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
-      await removeApiKey(message.author.id);
+      await removeResolvedApiKey(resolvedApiKey);
       await message.reply(
-        "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.",
+        resolvedApiKey.scope === "guild"
+          ? "Mistral rejected this server's API key, so I removed it. Run `/set-api-key` with a new key."
+          : "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.",
       );
       return;
     }

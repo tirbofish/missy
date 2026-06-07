@@ -12,6 +12,10 @@ import {
 } from "./context.ts";
 import { shouldUsePriorConversation } from "./contextIntent.ts";
 import { getMessageConversationId } from "./conversation.ts";
+import {
+  currentLookupStatusMessage,
+  isCurrentLookupRequest,
+} from "./currentLookup.ts";
 import { actorFromMessage } from "./discordActor.ts";
 import {
   replyWithDiscordMessages,
@@ -109,6 +113,10 @@ export async function handleDirectMessage(message: Message): Promise<void> {
   }
 
   try {
+    if (isCurrentLookupRequest(mistralMessage)) {
+      await message.reply(currentLookupStatusMessage(mistralMessage));
+    }
+
     await sendTyping(message);
     const context = shouldUsePriorConversation(mistralMessage)
       ? await getConversationContext(conversationId)

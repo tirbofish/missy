@@ -1,0 +1,32 @@
+import { assertEquals } from "@std/assert";
+import { splitDiscordMessages } from "./mistral.ts";
+
+Deno.test("splits explicit message separators", () => {
+  assertEquals(splitDiscordMessages("first\n---\nsecond"), [
+    "first",
+    "second",
+  ]);
+});
+
+Deno.test("splits inline Missy message separators", () => {
+  assertEquals(
+    splitDiscordMessages("series is 2-0 knicks MISSY_MESSAGE_BREAK\nnext game"),
+    [
+      "series is 2-0 knicks",
+      "next game",
+    ],
+  );
+});
+
+Deno.test("splits short casual multiline replies", () => {
+  assertEquals(splitDiscordMessages("nah\nsame old missy, different day"), [
+    "nah",
+    "same old missy, different day",
+  ]);
+});
+
+Deno.test("does not auto split lists", () => {
+  const message = "- one\n- two";
+
+  assertEquals(splitDiscordMessages(message), [message]);
+});

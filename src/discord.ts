@@ -77,6 +77,23 @@ function buildApprovalComponents(approveId: string, denyId: string) {
 function buildOperationApprovalMessage(
   request: FileOperationApprovalRequest,
 ): string {
+  if (request.action === "deno_permission") {
+    return [
+      `Approve Deno REPL ${request.permission?.name ?? "local"} permission?`,
+      "",
+      `Working directory: \`${
+        formatPath(request.workingDirectory ?? request.targetPath ?? "")
+      }\``,
+      `Permission target: \`${
+        formatPath(request.permission?.target ?? "all")
+      }\``,
+      "",
+      "```ts",
+      request.code ?? "",
+      "```",
+    ].join("\n");
+  }
+
   if (request.action === "copy") {
     return [
       "Approve copying this local path?",
@@ -102,6 +119,14 @@ function buildOperationApprovalMessage(
       `Path: \`${formatPath(request.targetPath ?? "")}\``,
       "",
       "This cannot be undone by Missy.",
+    ].join("\n");
+  }
+
+  if (request.action === "find") {
+    return [
+      "Approve recursively searching this local folder?",
+      "",
+      `Path: \`${formatPath(request.targetPath ?? "")}\``,
     ].join("\n");
   }
 
@@ -166,14 +191,17 @@ function logFilesystemAccess(
     action: request.action,
     at: new Date().toISOString(),
     channelId: actor.channelId,
+    code: request.code,
     destinationPath: request.destinationPath,
     event: `filesystem_${event}`,
     guildId: actor.guildId,
+    permission: request.permission,
     sourcePath: request.sourcePath,
     subject: request.subject,
     targetPath: request.targetPath,
     userId: actor.userId,
     username: actor.username,
+    workingDirectory: request.workingDirectory,
   }));
 }
 

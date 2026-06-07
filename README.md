@@ -71,8 +71,9 @@ current command set again.
 ## Use
 
 - DM Missy your Mistral API key once, then DM normally to chat.
-- In a server, run `/set-api-key` once, then mention Missy, reply to one of her
-  messages, or prefix a message with `!M!`.
+- In a server, run `/set-api-key` once to save a shared server key. Everyone in
+  that server can then mention Missy, reply to one of her messages, or prefix a
+  message with `!M!`.
 - For prefixed server messages, use `!M!<message>` to chat or `!M!clear` to
   clear the saved context.
 - Missy can send multiple Discord messages when a response is long or when the
@@ -90,7 +91,8 @@ current command set again.
 - Use `/clear` to clear Missy's saved context for your current DM or server
   channel conversation. After a clear, Missy ignores earlier channel history
   unless you explicitly say `look past your clear point`.
-- Use `/api-key-status` and `/remove-api-key` to manage your saved key.
+- Use `/api-key-status` and `/remove-api-key` to manage the server key in a
+  server, or your personal key in DMs.
 - Use `/help` to see command and tool availability.
 - Use `/mcp-add` to add or replace a local stdio MCP server. Only users or roles
   listed in `MCP_ADMIN_USER_IDS` or `MCP_ADMIN_ROLE_IDS` can run it.
@@ -100,11 +102,20 @@ current command set again.
   mention/prefix flows.
 - Users or roles listed in `MISSY_LOCAL_ACCESS_USER_IDS` or
   `MISSY_LOCAL_ACCESS_ROLE_IDS` can use local computer and filesystem tools from
-  DMs or servers. Missy can stat, list, read, copy, create folders, write text
-  files, move/rename, overwrite, and delete local files/folders anywhere Deno
-  has OS permission, including paths such as `D:\`. Every filesystem action
-  shows a check/cross approval prompt first. Users not listed have no local
-  access, including in DMs.
+  DMs or servers. Missy can stat, list, recursively find, read, copy, create
+  folders, write text files, move/rename, overwrite, delete local files/folders,
+  and use a local Deno REPL for compound file tasks anywhere Deno has OS
+  permission, including paths such as `D:\`. The REPL starts without local
+  permissions; when it requests read/write/run/net/env access, that permission
+  is sent to chat for check/cross approval before rerunning with only the
+  approved scoped Deno flag. Users not listed have no local access, including in
+  DMs.
+
+## Personality
+
+Missy's response style is loaded from `PERSONALITY.md` on each request. Edit
+that file to tune tone, texting style, multi-message behavior, and reaction
+rules without changing TypeScript.
 
 ## Agent SDK MCP
 
@@ -156,13 +167,24 @@ Local filesystem access is implemented as built-in Missy tools, not as an MCP
 server. The model can use them only when the requesting Discord user ID is
 listed in `MISSY_LOCAL_ACCESS_USER_IDS` or one of their role IDs is listed in
 `MISSY_LOCAL_ACCESS_ROLE_IDS`; by default, no one is allowed. Allowed users can
-inspect paths, list folders, read text files, copy paths to new destinations,
-create folders, and create text files from DMs or servers. Access is not limited
-to the Desktop; absolute paths such as `D:\` work if Deno has OS permission.
-Every filesystem operation sends a check/cross approval prompt to the requesting
-Discord user before it runs. The `deno task dev` command grants broad read/write
-permission to Deno so this app-level approval gate can cover the whole local
-filesystem.
+inspect paths, list folders, recursively find files, read text files, copy paths
+to new destinations, create folders, create text files, move/rename paths,
+delete paths, and use a local Deno REPL from DMs or servers. Access is not
+limited to the Desktop; absolute paths such as `D:\` work if Deno has OS
+permission. The REPL tool starts without local permissions. If the evaluated
+code attempts to read, write, run a command, use network, or access environment
+variables, Deno returns a missing-permission error; Missy sends that specific
+permission request and the REPL code to the requesting Discord user for
+check/cross approval, then reruns with only the approved scoped Deno flag. The
+`deno task dev` command grants broad read/write/run permission to the bot so it
+can host this app-level approval gate and launch permission-scoped child Deno
+processes.
+
+For example, a local-access user can ask Missy to locate model files in their
+home directory and move them into a new folder. Missy can choose an appropriate
+recursive Deno snippet, forward Deno's requested read/write permissions to chat,
+then execute it after approval instead of only explaining what the user should
+type.
 
 Filesystem approval prompts and tool execution are logged to stdout as JSON.
 Logs include the Discord user ID, username, guild/channel where available,

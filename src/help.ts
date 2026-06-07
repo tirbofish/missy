@@ -23,7 +23,7 @@ export const SYSTEM_PROMPT_DENIAL_MESSAGE =
 
 export function buildHelpMessage(hasLocalAccess: boolean): string {
   const desktopHelp = hasLocalAccess
-    ? "\n- You can ask about any local path, including `D:\\`, in DMs or servers. Missy can stat, list, read, copy, create folders, and write text files.\n- Every filesystem action shows a check/cross approval prompt before it runs."
+    ? "\n- You can ask about any local path, including `D:\\`, in DMs or servers. Missy can stat, list, recursively find, read, copy, create folders, write text files, move/rename, delete, and use a Deno REPL for compound file tasks.\n- The Deno REPL starts without local permissions and sends each requested read/write/run/net/env permission to chat for approval before rerunning with that scoped permission."
     : "\n- Desktop, local computer, and filesystem tools are disabled for your Discord user or roles.";
 
   return [
@@ -31,10 +31,10 @@ export function buildHelpMessage(hasLocalAccess: boolean): string {
     "",
     "- `/missy message:<text>`: chat with Missy.",
     "- `/clear`: clear this conversation context and set a channel-history clear point.",
-    "- `/set-api-key api-key:<key>`: save your Mistral API key.",
+    "- `/set-api-key api-key:<key>`: save a server key in servers, or your personal key in DMs.",
     "- `/model`: view or change your Mistral model.",
-    "- `/api-key-status`: check whether your key is saved.",
-    "- `/remove-api-key`: remove your saved key.",
+    "- `/api-key-status`: check whether this server or DM has a saved key.",
+    "- `/remove-api-key`: remove this server's key in servers, or your personal key in DMs.",
     "- `/analyze-history`: summarize recent channel messages.",
     "- `/mcp-add`: admin-only MCP server configuration.",
     "- `/shutdown`: stop Missy, restricted to configured shutdown users.",

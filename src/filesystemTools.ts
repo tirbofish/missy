@@ -5,6 +5,9 @@ export type FileOperationApprovalRequest = {
   action:
     | "copy"
     | "delete"
+    | "deno_permission"
+    | "deno_repl"
+    | "find"
     | "list"
     | "mkdir"
     | "move"
@@ -12,10 +15,13 @@ export type FileOperationApprovalRequest = {
     | "read"
     | "stat"
     | "write";
+  code?: string;
   destinationPath?: string;
+  permission?: DenoPermissionRequest;
   sourcePath?: string;
   subject: "file" | "folder" | "path";
   targetPath?: string;
+  workingDirectory?: string;
 };
 
 export type FileOperationApprovalHandler = (
@@ -25,6 +31,8 @@ export type FileOperationApprovalHandler = (
 export const FILESYSTEM_TOOL_NAMES = {
   copy: "missy_filesystem_copy",
   delete: "missy_filesystem_delete",
+  denoRepl: "missy_deno_repl",
+  find: "missy_filesystem_find",
   list: "missy_filesystem_list",
   mkdir: "missy_filesystem_mkdir",
   move: "missy_filesystem_move",
@@ -33,7 +41,94 @@ export const FILESYSTEM_TOOL_NAMES = {
   writeText: "missy_filesystem_write_text",
 } as const;
 
+type DenoPermissionName =
+  | "env"
+  | "ffi"
+  | "net"
+  | "read"
+  | "run"
+  | "sys"
+  | "write";
+
+type DenoPermissionRequest = {
+  name: DenoPermissionName;
+  target?: string;
+};
+
+const MAX_DENO_REPL_CODE_LENGTH = 1_500;
+const MAX_DENO_REPL_PERMISSION_ROUNDS = 8;
+const DENO_PERMISSION_NAMES: readonly DenoPermissionName[] = [
+  "env",
+  "ffi",
+  "net",
+  "read",
+  "run",
+  "sys",
+  "write",
+];
+
 export const filesystemTools: MistralToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: FILESYSTEM_TOOL_NAMES.denoRepl,
+      description:
+        "Run TypeScript in a local Deno REPL for compound filesystem tasks such as recursive search, folder creation, copying, moving, or renaming. The REPL starts without local permissions; when Deno requests read/write/run/net/env/etc. access, Missy forwards that specific permission request to Discord for approval and reruns with only the approved scoped permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description:
+              "TypeScript/JavaScript code to evaluate with deno repl --eval. Use console.log or console.table for useful output. Prefer Deno APIs over shelling out.",
+          },
+          cwd: {
+            type: "string",
+            description:
+              "Optional working directory for the REPL. Defaults to the current bot process directory.",
+          },
+          timeoutMs: {
+            type: "integer",
+            description:
+              "Optional timeout in milliseconds. Defaults to 30000, max 120000.",
+          },
+        },
+        required: ["code"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: FILESYSTEM_TOOL_NAMES.find,
+      description:
+        "Request Discord approval, then recursively search a local folder for files by filename text and/or extension. Use before moving or copying unknown local files.",
+      parameters: {
+        type: "object",
+        properties: {
+          extensions: {
+            type: "array",
+            description:
+              "Optional file extensions to match, such as .safetensors, .ckpt, .gguf, .pt, or .bin.",
+            items: { type: "string" },
+          },
+          limit: {
+            type: "integer",
+            description: "Maximum matches to return. Defaults to 100.",
+          },
+          path: {
+            type: "string",
+            description: "Local folder to search recursively.",
+          },
+          query: {
+            type: "string",
+            description: "Optional case-insensitive filename substring.",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -204,11 +299,17 @@ function actionFromToolName(
   toolName: string,
   args: Record<string, unknown>,
 ): FileOperationApprovalRequest["action"] | "unknown" {
+  if (toolName === FILESYSTEM_TOOL_NAMES.denoRepl) {
+    return "deno_repl";
+  }
   if (toolName === FILESYSTEM_TOOL_NAMES.copy) {
     return "copy";
   }
   if (toolName === FILESYSTEM_TOOL_NAMES.delete) {
     return "delete";
+  }
+  if (toolName === FILESYSTEM_TOOL_NAMES.find) {
+    return "find";
   }
   if (toolName === FILESYSTEM_TOOL_NAMES.list) {
     return "list";
@@ -251,6 +352,7 @@ function logFilesystemTool(
   console.info(JSON.stringify({
     action: actionFromToolName(toolName, args),
     at: new Date().toISOString(),
+    code: typeof args.code === "string" ? args.code : undefined,
     destinationPath,
     error: error instanceof Error ? error.message : undefined,
     event: `filesystem_tool_${event}`,
@@ -279,6 +381,13 @@ function clampBytes(value: unknown, fallback: number): number {
   return Number.isFinite(parsed)
     ? Math.max(1, Math.min(parsed, 200_000))
     : fallback;
+}
+
+function clampTimeoutMs(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(1_000, Math.min(parsed, 120_000))
+    : 30_000;
 }
 
 async function pathExists(value: string): Promise<boolean> {
@@ -329,6 +438,148 @@ async function copyPath(
   await Deno.copyFile(sourcePath, destinationPath);
 }
 
+function denoPermissionKey(permission: DenoPermissionRequest): string {
+  return `${permission.name}:${permission.target ?? ""}`;
+}
+
+function denoPermissionFlag(permission: DenoPermissionRequest): string {
+  const flagName = `--allow-${permission.name}`;
+
+  if (!permission.target) {
+    return flagName;
+  }
+
+  return `${flagName}=${permission.target}`;
+}
+
+function denoDenyFlags(
+  permissions: readonly DenoPermissionRequest[],
+): string[] {
+  const approvedNames = new Set(
+    permissions.map((permission) => permission.name),
+  );
+
+  return DENO_PERMISSION_NAMES
+    .filter((name) => !approvedNames.has(name))
+    .map((name) => `--deny-${name}`);
+}
+
+function parseDenoPermissionRequest(
+  output: string,
+): DenoPermissionRequest | undefined {
+  const plainOutput = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const match = plainOutput.match(
+    /Requires\s+([a-z]+)\s+access(?:\s+to\s+"([^"]+)")?/i,
+  );
+
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const name = match[1].toLowerCase();
+
+  if (!DENO_PERMISSION_NAMES.includes(name as DenoPermissionName)) {
+    return undefined;
+  }
+
+  return {
+    name: name as DenoPermissionName,
+    target: match[2],
+  };
+}
+
+function denoReplChildEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (
+    const name of [
+      "HOME",
+      "PATH",
+      "SystemRoot",
+      "TEMP",
+      "TMP",
+      "USERPROFILE",
+      "WINDIR",
+    ]
+  ) {
+    const value = Deno.env.get(name);
+
+    if (value) {
+      env[name] = value;
+    }
+  }
+
+  return env;
+}
+
+async function runDenoReplEval(
+  code: string,
+  cwd: string,
+  timeoutMs: number,
+  permissions: readonly DenoPermissionRequest[],
+): Promise<{
+  code: number | null;
+  denoPermissions: readonly DenoPermissionRequest[];
+  inputCode: string;
+  cwd: string;
+  signal: Deno.Signal | null;
+  stderr: string;
+  stdout: string;
+  timedOut: boolean;
+}> {
+  const denoArgs = [
+    "repl",
+    "--quiet",
+    "--no-config",
+    "--permission-set",
+    ...denoDenyFlags(permissions),
+    ...permissions.map(denoPermissionFlag),
+    "--eval",
+    code,
+  ];
+  const process = new Deno.Command("cmd", {
+    args: [
+      "/d",
+      "/c",
+      "deno",
+      ...denoArgs,
+    ],
+    clearEnv: true,
+    cwd,
+    env: denoReplChildEnv(),
+    stderr: "piped",
+    stdout: "piped",
+  }).spawn();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+
+    try {
+      process.kill();
+    } catch {
+      // The command may have exited between the timeout and kill.
+    }
+  }, timeoutMs);
+
+  try {
+    const output = await process.output();
+    const decoder = new TextDecoder();
+
+    return {
+      code: output.code,
+      denoPermissions: permissions,
+      inputCode: code,
+      cwd,
+      signal: output.signal,
+      stderr: decoder.decode(output.stderr).slice(0, 20_000),
+      stdout: decoder.decode(output.stdout).slice(0, 40_000),
+      timedOut,
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function requestApprovalOrThrow(
   requestApproval: FileOperationApprovalHandler | undefined,
   request: FileOperationApprovalRequest,
@@ -365,6 +616,138 @@ async function statTool(
   });
   const info = await Deno.stat(resolvedPath);
   return serializeFileInfo(resolvedPath, info);
+}
+
+async function denoReplTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
+  const code = requiredString(args, "code");
+
+  if (code.length > MAX_DENO_REPL_CODE_LENGTH) {
+    throw new Error(
+      `Deno REPL code is too long. Keep code under ${MAX_DENO_REPL_CODE_LENGTH} characters so permission approval prompts can show exactly what will run.`,
+    );
+  }
+
+  const cwd = typeof args.cwd === "string" && args.cwd.trim()
+    ? resolveLocalPath(args.cwd)
+    : Deno.cwd();
+  const timeoutMs = clampTimeoutMs(args.timeoutMs);
+
+  const permissions: DenoPermissionRequest[] = [];
+  const deniedPermissions: DenoPermissionRequest[] = [];
+
+  for (let round = 0; round < MAX_DENO_REPL_PERMISSION_ROUNDS; round++) {
+    const result = await runDenoReplEval(code, cwd, timeoutMs, permissions);
+    const combinedOutput = `${result.stderr}\n${result.stdout}`;
+    const requestedPermission = parseDenoPermissionRequest(combinedOutput);
+
+    if (result.timedOut || !requestedPermission) {
+      return {
+        ...result,
+        deniedPermissions,
+      };
+    }
+
+    if (
+      permissions.some((permission) =>
+        denoPermissionKey(permission) === denoPermissionKey(requestedPermission)
+      )
+    ) {
+      return {
+        ...result,
+        deniedPermissions,
+      };
+    }
+
+    const approved = await requestApprovalOrThrow(requestApproval, {
+      action: "deno_permission",
+      code,
+      permission: requestedPermission,
+      subject: "path",
+      targetPath: cwd,
+      workingDirectory: cwd,
+    });
+
+    if (!approved) {
+      deniedPermissions.push(requestedPermission);
+      return {
+        ...result,
+        deniedPermissions,
+      };
+    }
+
+    permissions.push(requestedPermission);
+  }
+
+  throw new Error(
+    `Deno REPL requested more than ${MAX_DENO_REPL_PERMISSION_ROUNDS} permission rounds.`,
+  );
+}
+
+async function findTool(
+  args: Record<string, unknown>,
+  requestApproval?: FileOperationApprovalHandler,
+): Promise<unknown> {
+  const resolvedPath = resolveLocalPath(requiredString(args, "path"));
+  const limit = Math.max(1, Math.min(Number(args.limit) || 100, 500));
+  const query = String(args.query ?? "").trim().toLowerCase();
+  const extensions = Array.isArray(args.extensions)
+    ? args.extensions
+      .filter((extension): extension is string => typeof extension === "string")
+      .map((extension) => extension.trim().toLowerCase().replace(/^\*?\./, "."))
+      .filter(Boolean)
+    : [];
+  await requireApproval(requestApproval, {
+    action: "find",
+    subject: "folder",
+    targetPath: resolvedPath,
+  });
+
+  const matches: ReturnType<typeof serializeFileInfo>[] = [];
+  let skippedDirectories = 0;
+
+  async function walk(currentPath: string): Promise<void> {
+    let entries: Deno.DirEntry[] = [];
+
+    try {
+      for await (const entry of Deno.readDir(currentPath)) {
+        entries.push(entry);
+      }
+    } catch {
+      skippedDirectories++;
+      return;
+    }
+
+    entries = entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (matches.length >= limit) return;
+
+      const entryPath = path.join(currentPath, entry.name);
+      const lowerName = entry.name.toLowerCase();
+      const extensionMatches = extensions.length === 0 ||
+        extensions.some((extension) => lowerName.endsWith(extension));
+      const queryMatches = !query || lowerName.includes(query);
+
+      if (entry.isFile && extensionMatches && queryMatches) {
+        matches.push(serializeFileInfo(entryPath, await Deno.stat(entryPath)));
+      }
+
+      if (entry.isDirectory) {
+        await walk(entryPath);
+      }
+    }
+  }
+
+  await walk(resolvedPath);
+  return {
+    matches,
+    path: resolvedPath,
+    skippedDirectories,
+    truncated: matches.length >= limit,
+  };
 }
 
 async function listTool(
@@ -560,6 +943,12 @@ export async function callFilesystemTool(
         break;
       case FILESYSTEM_TOOL_NAMES.delete:
         result = await deleteTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.denoRepl:
+        result = await denoReplTool(args, requestApproval);
+        break;
+      case FILESYSTEM_TOOL_NAMES.find:
+        result = await findTool(args, requestApproval);
         break;
       case FILESYSTEM_TOOL_NAMES.list:
         result = await listTool(args, requestApproval);

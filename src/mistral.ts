@@ -119,6 +119,7 @@ export type MistralSendOptions = {
   discordHistory?: string;
   enableMcp?: boolean;
   model?: string;
+  personalityInstruction?: string;
   requestFileOperationApproval?: FileOperationApprovalHandler;
 };
 
@@ -333,14 +334,53 @@ function splitLongDiscordMessage(message: string): string[] {
   return chunks;
 }
 
-export function splitDiscordMessages(message: string): string[] {
-  const requestedMessages = message
-    .split(new RegExp(`^\\s*${DISCORD_MESSAGE_BREAK}\\s*$`, "gim"))
+function shouldAutoSplitShortLines(message: string): boolean {
+  if (
+    message.includes("```") ||
+    /https?:\/\//i.test(message) ||
+    /^\s*(sources?:|[-*]\s|\d+\.\s|>|#{1,6}\s|\|)/im.test(message)
+  ) {
+    return false;
+  }
+
+  const lines = message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2 || lines.length > 5) {
+    return false;
+  }
+
+  return lines.every((line) => line.length <= 120);
+}
+
+function splitRequestedDiscordMessages(message: string): string[] {
+  const explicitMessages = message
+    .split(
+      new RegExp(`\\s*(?:${DISCORD_MESSAGE_BREAK}|^\\s*---\\s*$)\\s*`, "gim"),
+    )
     .map((part) => part.trim())
     .filter(Boolean);
-  const messages = requestedMessages.length > 0 ? requestedMessages : [message];
 
-  return messages.flatMap(splitLongDiscordMessage);
+  if (explicitMessages.length > 1) {
+    return explicitMessages;
+  }
+
+  if (shouldAutoSplitShortLines(message)) {
+    return message
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  return [message.trim()].filter(Boolean);
+}
+
+export function splitDiscordMessages(message: string): string[] {
+  return splitRequestedDiscordMessages(message).flatMap(
+    splitLongDiscordMessage,
+  );
 }
 
 async function completeChat(
@@ -426,15 +466,25 @@ async function deleteMistralConversation(
   }
 }
 
-function buildPersonalityInstruction(): string {
-  return [
-    "You are Missy, a helpful Discord bot powered by Mistral. You are not Poke and should not claim to be developed by Interaction.",
-    "Sound more like a sharp, warm friend in a group chat than a traditional chatbot. Be concise by default, match the user's casualness, and avoid corporate helper phrases like 'How can I help you?', 'Let me know if you need anything else', 'No problem at all', or 'I apologize for the confusion'.",
-    "Use light wit or dry humor only when it fits naturally. Do not force jokes, do not stack multiple jokes, and do not use filler slang like lol/lmao unless it genuinely fits the user's tone.",
-    "If the user is just chatting, answer like a person. Do not turn every casual message into an offer to help or an explanation.",
-    "Do not use emoji unless the user used emoji first. If reacting is better than replying, include a line like MISSY_REACT: <emoji>. To intentionally send no text reply, include a line containing only MISSY_NO_REPLY.",
-    `You may split a response into multiple Discord messages when it feels more natural for texting, when separating topics, or when a long answer would read better in chunks. Put a line containing only ${DISCORD_MESSAGE_BREAK} between messages. Prefer a few clean text-message-sized chunks over one dense wall of text.`,
-  ].join(" ");
+async function loadPersonalityInstruction(): Promise<string> {
+  try {
+    const content = await Deno.readTextFile(
+      new URL("../PERSONALITY.md", import.meta.url),
+    );
+    return [
+      content.trim(),
+      "You are not Poke and should not claim to be developed by Interaction.",
+      `When splitting messages, use the exact separator ${DISCORD_MESSAGE_BREAK} on its own line.`,
+    ].join("\n\n");
+  } catch (error) {
+    console.error("Could not read PERSONALITY.md", error);
+    return [
+      "You are Missy, a helpful Discord bot powered by Mistral.",
+      "Sound like a warm, concise friend in a group chat rather than a traditional chatbot.",
+      "When asked which option is better, pick a side after briefly weighing the tradeoffs. If the prompt is potentially unsafe, do not choose between harmful options; redirect toward a safer next step.",
+      `Use ${DISCORD_MESSAGE_BREAK} on its own line to split natural multi-message replies.`,
+    ].join("\n");
+  }
 }
 
 function buildMessages(
@@ -446,7 +496,7 @@ function buildMessages(
     hasLocalAccess(payload) && localFilesystemIntent
       ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
         localAccessContextLabel(payload)
-      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. Use available filesystem tools when helpful. Every filesystem tool asks the user for explicit check/cross approval before it runs.`
+      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. Use available filesystem tools when helpful. For compound local tasks such as locating files and moving them to a folder, run the relevant filesystem tool or Deno REPL tool instead of merely describing commands. The Deno REPL starts without local permissions; when it requests read/write/run/net/env/etc. access, that exact permission is sent to the user for check/cross approval before the code is rerun with the approved scoped permission.`
       : hasLocalAccess(payload)
       ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
       : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never access local Desktop or computer files and never modify local filesystem paths for this user.`;
@@ -454,7 +504,7 @@ function buildMessages(
     {
       role: "system",
       content:
-        `${buildPersonalityInstruction()} Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
+        `${options.personalityInstruction} Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
     },
   ];
 
@@ -486,12 +536,13 @@ function buildInstructions(
     hasLocalAccess(payload) && localFilesystemIntent
       ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
         localAccessContextLabel(payload)
-      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. If the user asks about local files, use filesystem tools when helpful. Every filesystem tool asks the user for explicit check/cross approval before it runs.`
+      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. If the user asks about local files, use filesystem tools when helpful. For compound local tasks such as locating files and moving them to a folder, run the relevant filesystem tool or Deno REPL tool instead of merely describing commands. The Deno REPL starts without local permissions; when it requests read/write/run/net/env/etc. access, that exact permission is sent to the user for check/cross approval before the code is rerun with the approved scoped permission.`
       : hasLocalAccess(payload)
       ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
       : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never move, rename, delete, read, write, copy, create, or list local filesystem paths for this user.`;
   const instructions = [
-    buildPersonalityInstruction(),
+    options.personalityInstruction ??
+      "You are Missy, a helpful Discord bot powered by Mistral.",
     "You have access to web_search for up-to-date information. Use it when the user asks about current events, recent facts, live information, or a specific webpage.",
     localAccessInstruction,
   ];
@@ -784,6 +835,11 @@ export async function sendMistralMessage(
   payload: MistralMessagePayload,
   options: MistralSendOptions = {},
 ): Promise<string> {
+  const sendOptions: MistralSendOptions = {
+    ...options,
+    personalityInstruction: options.personalityInstruction ??
+      await loadPersonalityInstruction(),
+  };
   const registry = options.enableMcp === false
     ? { tools: [], entries: new Map() }
     : filterMcpToolsForPayload(await loadMcpTools(), payload);
@@ -793,9 +849,9 @@ export async function sendMistralMessage(
       apiKey,
       payload,
       registry,
-      options,
+      sendOptions,
     );
   }
 
-  return await sendMistralChatMessage(apiKey, payload, registry, options);
+  return await sendMistralChatMessage(apiKey, payload, registry, sendOptions);
 }

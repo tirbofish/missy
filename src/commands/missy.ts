@@ -7,10 +7,15 @@ import { Discord, Slash, SlashOption } from "discordx";
 import { canManageMcp, MCP_ADMIN_REQUIRED_MESSAGE } from "../admin.ts";
 import {
   getApiKey,
-  hasApiKey,
+  getEffectiveApiKey,
+  hasGuildApiKey,
   parseApiKeyCandidate,
   removeApiKey,
+  removeGuildApiKey,
+  removeResolvedApiKey,
+  ResolvedApiKey,
   setApiKey,
+  setGuildApiKey,
 } from "../apiKeys.ts";
 import {
   appendConversationTurn,
@@ -49,7 +54,7 @@ import {
 } from "../shutdown.ts";
 
 const NO_API_KEY_MESSAGE =
-  "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+  "Set a Mistral API key first with `/set-api-key`. You can create one at https://console.mistral.ai/api-keys";
 const MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
 const COMMAND_CONTEXTS = [
   InteractionContextType.Guild,
@@ -94,6 +99,18 @@ function parseOptionalStringRecord(
   return parsed as Record<string, string>;
 }
 
+async function getInteractionApiKey(
+  interaction: CommandInteraction,
+): Promise<ResolvedApiKey | undefined> {
+  return await getEffectiveApiKey(interaction.user.id, interaction.guildId);
+}
+
+function rejectedApiKeyMessage(resolvedApiKey: ResolvedApiKey): string {
+  return resolvedApiKey.scope === "guild"
+    ? "Mistral rejected this server's API key, so I removed it. Run `/set-api-key` with a new key."
+    : "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.";
+}
+
 @Discord()
 export class MissyCommands {
   private async runShutdownCommand(
@@ -131,7 +148,7 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Save your Mistral API key",
+    description: "Save a Mistral API key for this server or DM",
     name: "set-api-key",
   })
   async setApiKey(
@@ -148,6 +165,16 @@ export class MissyCommands {
     if (!parsedApiKey) {
       await interaction.reply({
         content: NO_API_KEY_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (interaction.guildId) {
+      await setGuildApiKey(interaction.guildId, parsedApiKey);
+      await interaction.reply({
+        content:
+          "Got it - this server's Mistral API key is saved. Everyone in this server can use Missy with it.",
         ephemeral: true,
       });
       return;
@@ -174,9 +201,9 @@ export class MissyCommands {
     }) message: string,
     interaction: CommandInteraction,
   ): Promise<void> {
-    const apiKey = await getApiKey(interaction.user.id);
+    const resolvedApiKey = await getInteractionApiKey(interaction);
 
-    if (!apiKey) {
+    if (!resolvedApiKey) {
       await interaction.reply({
         content: NO_API_KEY_MESSAGE,
         ephemeral: true,
@@ -193,7 +220,7 @@ export class MissyCommands {
         ? await getConversationContext(conversationId)
         : [];
       const model = await getEffectiveModel(interaction.user.id);
-      const reply = await sendMistralMessage(apiKey, {
+      const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
         message,
         source: "discord-slash",
         discord: {
@@ -215,10 +242,8 @@ export class MissyCommands {
       await editReplyWithDiscordMessages(interaction, reply);
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
-        await removeApiKey(interaction.user.id);
-        await interaction.editReply(
-          "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.",
-        );
+        await removeResolvedApiKey(resolvedApiKey);
+        await interaction.editReply(rejectedApiKeyMessage(resolvedApiKey));
         return;
       }
 
@@ -247,9 +272,9 @@ export class MissyCommands {
     }) limit: number | undefined,
     interaction: CommandInteraction,
   ): Promise<void> {
-    const apiKey = await getApiKey(interaction.user.id);
+    const resolvedApiKey = await getInteractionApiKey(interaction);
 
-    if (!apiKey) {
+    if (!resolvedApiKey) {
       await interaction.reply({
         content: NO_API_KEY_MESSAGE,
         ephemeral: true,
@@ -283,7 +308,7 @@ export class MissyCommands {
         "Analyze this Discord message history. Summarize the main topics, decisions, open questions, and any useful next steps.";
       const context = await getConversationContext(conversationId);
       const model = await getEffectiveModel(interaction.user.id);
-      const reply = await sendMistralMessage(apiKey, {
+      const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
         message: prompt,
         source: "discord-slash",
         discord: {
@@ -303,10 +328,8 @@ export class MissyCommands {
       await editReplyWithDiscordMessages(interaction, reply);
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
-        await removeApiKey(interaction.user.id);
-        await interaction.editReply(
-          "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.",
-        );
+        await removeResolvedApiKey(resolvedApiKey);
+        await interaction.editReply(rejectedApiKeyMessage(resolvedApiKey));
         return;
       }
 
@@ -503,13 +526,19 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Check whether you have a saved Mistral API key",
+    description: "Check whether this context has a saved Mistral API key",
     name: "api-key-status",
   })
   async status(interaction: CommandInteraction): Promise<void> {
-    const saved = await hasApiKey(interaction.user.id);
+    const saved = interaction.guildId
+      ? await hasGuildApiKey(interaction.guildId)
+      : Boolean(await getApiKey(interaction.user.id));
     await interaction.reply({
-      content: saved
+      content: interaction.guildId
+        ? saved
+          ? "This server has a saved Mistral API key."
+          : "This server doesn't have a saved Mistral API key."
+        : saved
         ? "You have a saved Mistral API key."
         : "You don't have a saved Mistral API key.",
       ephemeral: true,
@@ -518,13 +547,19 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Remove your saved Mistral API key",
+    description: "Remove the saved Mistral API key for this context",
     name: "remove-api-key",
   })
   async remove(interaction: CommandInteraction): Promise<void> {
-    const removed = await removeApiKey(interaction.user.id);
+    const removed = interaction.guildId
+      ? await removeGuildApiKey(interaction.guildId)
+      : await removeApiKey(interaction.user.id);
     await interaction.reply({
-      content: removed
+      content: interaction.guildId
+        ? removed
+          ? "This server's Mistral API key was removed."
+          : "This server didn't have a saved Mistral API key."
+        : removed
         ? "Your Mistral API key was removed."
         : "You didn't have a saved Mistral API key.",
       ephemeral: true,
