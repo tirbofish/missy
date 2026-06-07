@@ -10,7 +10,7 @@ Deno.test("searches GIPHY with expected parameters", async () => {
       assertEquals(requestUrl.href.startsWith("https://api.giphy.com/"), true);
       assertEquals(requestUrl.searchParams.get("api_key"), "test-key");
       assertEquals(requestUrl.searchParams.get("q"), "dry laugh");
-      assertEquals(requestUrl.searchParams.get("limit"), "1");
+      assertEquals(requestUrl.searchParams.get("limit"), "10");
       assertEquals(requestUrl.searchParams.get("rating"), "pg-13");
       assertEquals(requestUrl.searchParams.get("lang"), "en");
 

@@ -114,7 +114,7 @@ Deno.test("resolves gif search controls through GIPHY", async () => {
     assertEquals(requestUrl.pathname, "/v1/gifs/search");
     assertEquals(requestUrl.searchParams.get("api_key"), "test-key");
     assertEquals(requestUrl.searchParams.get("q"), "awkward laugh reaction");
-    assertEquals(requestUrl.searchParams.get("limit"), "1");
+    assertEquals(requestUrl.searchParams.get("limit"), "10");
 
     return Promise.resolve(
       new Response(JSON.stringify({

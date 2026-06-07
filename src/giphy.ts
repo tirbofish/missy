@@ -55,7 +55,7 @@ export async function searchGiphyGif(
   const url = new URL(GIPHY_SEARCH_URL);
   url.searchParams.set("api_key", apiKey);
   url.searchParams.set("q", trimmedQuery);
-  url.searchParams.set("limit", String(options.limit ?? 1));
+  url.searchParams.set("limit", String(options.limit ?? 10));
   url.searchParams.set("rating", options.rating ?? DEFAULT_GIPHY_RATING);
   url.searchParams.set("lang", DEFAULT_GIPHY_LANG);
 
@@ -70,5 +70,13 @@ export async function searchGiphyGif(
   }
 
   const parsed = JSON.parse(responseBody) as GiphySearchResponse;
-  return parsed.data?.map(bestGifUrl).find(Boolean);
+  const urls = (parsed.data ?? []).map(bestGifUrl).filter(
+    (url): url is string => Boolean(url),
+  );
+
+  if (urls.length === 0) {
+    return undefined;
+  }
+
+  return urls[Math.floor(Math.random() * urls.length)];
 }
