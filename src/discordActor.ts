@@ -5,6 +5,11 @@ type MemberWithRoles = {
   roles?: unknown;
 };
 
+type MemberWithDisplayName = {
+  displayName?: string | null;
+  nick?: string | null;
+};
+
 type RoleCache = {
   keys?: () => Iterable<string>;
 };
@@ -39,4 +44,26 @@ export function actorFromInteraction(
     roleIds: roleIdsFromMember(interaction.member),
     userId: interaction.user.id,
   };
+}
+
+function cleanDisplayName(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+export function displayNameFromMessage(message: Message): string {
+  return cleanDisplayName(message.member?.displayName) ??
+    cleanDisplayName(message.author.globalName) ??
+    message.author.username;
+}
+
+export function displayNameFromInteraction(
+  interaction: CommandInteraction,
+): string {
+  const member = interaction.member as MemberWithDisplayName | null;
+
+  return cleanDisplayName(member?.displayName) ??
+    cleanDisplayName(member?.nick) ??
+    cleanDisplayName(interaction.user.globalName) ??
+    interaction.user.username;
 }

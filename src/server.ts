@@ -12,7 +12,7 @@ import {
   currentLookupStatusMessage,
   isCurrentLookupRequest,
 } from "./currentLookup.ts";
-import { actorFromMessage } from "./discordActor.ts";
+import { actorFromMessage, displayNameFromMessage } from "./discordActor.ts";
 import {
   replyWithDiscordMessages,
   requestMessageFileOperationApproval,
@@ -170,6 +170,7 @@ export async function handleServerMessage(
       discord: {
         userId: message.author.id,
         username: message.author.tag,
+        displayName: displayNameFromMessage(message),
         channelId: message.channelId,
         guildId: message.guildId ?? undefined,
         roleIds: actor.roleIds,

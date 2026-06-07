@@ -1,5 +1,8 @@
 import { assertEquals } from "@std/assert";
-import { splitDiscordMessages } from "./mistral.ts";
+import {
+  shouldShowSourcesForRequest,
+  splitDiscordMessages,
+} from "./mistral.ts";
 
 Deno.test("splits explicit message separators", () => {
   assertEquals(splitDiscordMessages("first\n---\nsecond"), [
@@ -29,4 +32,14 @@ Deno.test("does not auto split lists", () => {
   const message = "- one\n- two";
 
   assertEquals(splitDiscordMessages(message), [message]);
+});
+
+Deno.test("detects explicit source requests", () => {
+  assertEquals(shouldShowSourcesForRequest("who won the game"), false);
+  assertEquals(shouldShowSourcesForRequest("is linux open source"), false);
+  assertEquals(shouldShowSourcesForRequest("what is a url"), false);
+  assertEquals(shouldShowSourcesForRequest("where did you find that"), true);
+  assertEquals(shouldShowSourcesForRequest("where'd you read that"), true);
+  assertEquals(shouldShowSourcesForRequest("link it"), true);
+  assertEquals(shouldShowSourcesForRequest("send sources pls"), true);
 });

@@ -16,7 +16,7 @@ import {
   currentLookupStatusMessage,
   isCurrentLookupRequest,
 } from "./currentLookup.ts";
-import { actorFromMessage } from "./discordActor.ts";
+import { actorFromMessage, displayNameFromMessage } from "./discordActor.ts";
 import {
   replyWithDiscordMessages,
   requestMessageFileOperationApproval,
@@ -128,6 +128,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
       discord: {
         userId: message.author.id,
         username: message.author.tag,
+        displayName: displayNameFromMessage(message),
         channelId: message.channelId,
         roleIds: actor.roleIds,
       },

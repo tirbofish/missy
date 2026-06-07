@@ -23,6 +23,12 @@ type ResponseControls = {
   reactions: string[];
 };
 
+const FOLLOWUP_MESSAGE_DELAY_MS = 1_200;
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function extractResponseControls(content: string): ResponseControls {
   const reactions: string[] = [];
   const lines = content.split(/\r?\n/);
@@ -247,6 +253,7 @@ export async function replyWithDiscordMessages(
   }
 
   for (const nextMessage of remainingMessages) {
+    await sleep(FOLLOWUP_MESSAGE_DELAY_MS);
     await channel.send(nextMessage);
   }
 }
@@ -268,6 +275,7 @@ export async function editReplyWithDiscordMessages(
   await interaction.editReply(firstMessage);
 
   for (const nextMessage of remainingMessages) {
+    await sleep(FOLLOWUP_MESSAGE_DELAY_MS);
     await interaction.followUp({
       content: nextMessage,
       ephemeral: true,

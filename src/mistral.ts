@@ -42,6 +42,7 @@ export type MistralMessagePayload = {
   discord: {
     userId: string;
     username: string;
+    displayName?: string;
     channelId?: string;
     guildId?: string;
     roleIds?: readonly string[];
@@ -142,6 +143,38 @@ function localAccessContextLabel(payload: MistralMessagePayload): string {
   return payload.discord.guildId
     ? "a Discord server/guild channel"
     : "a Discord DM";
+}
+
+function userIdentityInstruction(payload: MistralMessagePayload): string {
+  const identity = [
+    `Discord user ID: ${payload.discord.userId}`,
+    `Discord username/tag: ${payload.discord.username}`,
+  ];
+
+  if (payload.discord.displayName) {
+    identity.push(
+      `Discord display name/nickname: ${payload.discord.displayName}`,
+    );
+  }
+
+  return [
+    `Current Discord user context: ${identity.join("; ")}.`,
+    "If you directly address this person, prefer their display name/nickname when available, and keep it natural. Do not force their name into every reply.",
+  ].join(" ");
+}
+
+export function shouldShowSourcesForRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+
+  return /\b(where did you|where'd you|where)\s+(find|get|see|read|hear)\b/
+    .test(normalized) ||
+    /\b(link it|link me|send (me )?(a |the )?link|drop (a |the )?link|got (a )?link)\b/
+      .test(normalized) ||
+    /\b(send|show|give|drop|provide)\b.{0,24}\b(source|sources|citation|citations|reference|references|proof)\b/
+      .test(normalized) ||
+    /^(source|sources|citations|references|proof)\s*(pls|please|\?)?$/.test(
+      normalized,
+    );
 }
 
 function hasCurrentLocalFilesystemIntent(
@@ -479,7 +512,7 @@ async function loadPersonalityInstruction(): Promise<string> {
   } catch (error) {
     console.error("Could not read PERSONALITY.md", error);
     return [
-      "You are Missy, a helpful Discord bot powered by Mistral.",
+      "You are Missy.",
       "Sound like a warm, concise friend in a group chat rather than a traditional chatbot.",
       "When asked which option is better, pick a side after briefly weighing the tradeoffs. If the prompt is potentially unsafe, do not choose between harmful options; redirect toward a safer next step.",
       `Use ${DISCORD_MESSAGE_BREAK} on its own line to split natural multi-message replies.`,
@@ -503,8 +536,9 @@ function buildMessages(
   const messages: MistralChatMessage[] = [
     {
       role: "system",
-      content:
-        `${options.personalityInstruction} Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
+      content: `${options.personalityInstruction} ${
+        userIdentityInstruction(payload)
+      } Use provided Discord history only as context for the current request. ${localAccessInstruction}`,
     },
   ];
 
@@ -542,8 +576,10 @@ function buildInstructions(
       : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never move, rename, delete, read, write, copy, create, or list local filesystem paths for this user.`;
   const instructions = [
     options.personalityInstruction ??
-      "You are Missy, a helpful Discord bot powered by Mistral.",
+      "You are Missy.",
+    userIdentityInstruction(payload),
     "You have access to web_search for up-to-date information. Use it when the user asks about current events, recent facts, live information, or a specific webpage.",
+    "Do not include sources or links after using web_search unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
     localAccessInstruction,
   ];
 
@@ -590,6 +626,7 @@ function referenceLabel(reference: MistralReferenceBlock): string | undefined {
 
 function extractConversationOutputText(
   output: MistralConversationOutput,
+  includeReferences: boolean,
 ): string {
   const content = output.content;
 
@@ -607,11 +644,16 @@ function extractConversationOutputText(
     .filter((value): value is string => Boolean(value))
     .join("")
     .trim();
-  const references = content
-    .filter((block) => block.type === "tool_reference")
-    .map(referenceLabel)
-    .filter((value): value is string => Boolean(value));
-  const uniqueReferences = [...new Set(references)];
+  const uniqueReferences = includeReferences
+    ? [
+      ...new Set(
+        content
+          .filter((block) => block.type === "tool_reference")
+          .map(referenceLabel)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ]
+    : [];
 
   if (uniqueReferences.length === 0) {
     return text;
@@ -622,10 +664,11 @@ function extractConversationOutputText(
 
 function extractConversationText(
   response: MistralConversationResponse,
+  includeReferences: boolean,
 ): string {
   const messages = (response.outputs ?? [])
     .filter((output) => output.type === "message.output")
-    .map(extractConversationOutputText)
+    .map((output) => extractConversationOutputText(output, includeReferences))
     .filter(Boolean);
 
   return messages.at(-1)?.trim() ?? "";
@@ -738,7 +781,10 @@ async function sendMistralConversationMessage(
       conversationIds.add(conversationId);
     }
 
-    const reply = extractConversationText(parsed);
+    const reply = extractConversationText(
+      parsed,
+      shouldShowSourcesForRequest(payload.message),
+    );
 
     if (!reply) {
       throw new MistralApiError(

@@ -30,7 +30,10 @@ import {
   maxDiscordHistoryLimit,
   shouldLookPastClearPoint,
 } from "../history.ts";
-import { actorFromInteraction } from "../discordActor.ts";
+import {
+  actorFromInteraction,
+  displayNameFromInteraction,
+} from "../discordActor.ts";
 import { canAccessLocalComputer } from "../localAccess.ts";
 import {
   editReplyWithDiscordMessages,
@@ -226,6 +229,7 @@ export class MissyCommands {
         discord: {
           userId: interaction.user.id,
           username: interaction.user.tag,
+          displayName: displayNameFromInteraction(interaction),
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
           roleIds: actor.roleIds,
@@ -314,6 +318,7 @@ export class MissyCommands {
         discord: {
           userId: interaction.user.id,
           username: interaction.user.tag,
+          displayName: displayNameFromInteraction(interaction),
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
           roleIds: actorFromInteraction(interaction).roleIds,
