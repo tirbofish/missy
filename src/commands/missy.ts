@@ -1,5 +1,6 @@
 import { ApplicationCommandOptionType, CommandInteraction } from "discord.js";
 import { Discord, Slash, SlashOption } from "discordx";
+import { canManageMcp, MCP_ADMIN_REQUIRED_MESSAGE } from "../admin.ts";
 import {
   getApiKey,
   hasApiKey,
@@ -8,13 +9,63 @@ import {
   setApiKey,
 } from "../apiKeys.ts";
 import {
+  appendConversationTurn,
+  clearConversationContext,
+  getConversationContext,
+} from "../context.ts";
+import { getInteractionConversationId } from "../conversation.ts";
+import {
+  buildInteractionHistoryContext,
+  maxDiscordHistoryLimit,
+} from "../history.ts";
+import {
   fitDiscordMessage,
   MistralApiError,
   sendMistralMessage,
 } from "../mistral.ts";
+import { addMcpServer, McpServerConfig } from "../mcp.ts";
 
 const NO_API_KEY_MESSAGE =
   "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+const MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
+
+function parseOptionalStringArray(value?: string): string[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(value) as unknown;
+
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((item) => typeof item === "string")
+  ) {
+    throw new Error("Expected a JSON array of strings.");
+  }
+
+  return parsed;
+}
+
+function parseOptionalStringRecord(
+  value?: string,
+): Record<string, string> | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(value) as unknown;
+
+  if (
+    !parsed ||
+    Array.isArray(parsed) ||
+    typeof parsed !== "object" ||
+    !Object.values(parsed).every((item) => typeof item === "string")
+  ) {
+    throw new Error("Expected a JSON object with string values.");
+  }
+
+  return parsed as Record<string, string>;
+}
 
 @Discord()
 export class MissyCommands {
@@ -74,6 +125,8 @@ export class MissyCommands {
     await interaction.deferReply({ ephemeral: true });
 
     try {
+      const conversationId = getInteractionConversationId(interaction);
+      const context = await getConversationContext(conversationId);
       const reply = await sendMistralMessage(apiKey, {
         message,
         source: "discord-slash",
@@ -83,7 +136,10 @@ export class MissyCommands {
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
         },
+      }, {
+        context,
       });
+      await appendConversationTurn(conversationId, message, reply);
       await interaction.editReply(fitDiscordMessage(reply));
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
@@ -100,10 +156,24 @@ export class MissyCommands {
   }
 
   @Slash({
-    description: "Send a test message to Missy",
-    name: "missy-test",
+    description: "Analyze recent messages from this Discord channel",
+    name: "analyze-history",
   })
-  async test(interaction: CommandInteraction): Promise<void> {
+  async analyzeHistory(
+    @SlashOption({
+      description: "What Missy should look for in the channel history",
+      name: "question",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) question: string | undefined,
+    @SlashOption({
+      description: `Messages to inspect, up to ${maxDiscordHistoryLimit()}`,
+      name: "limit",
+      required: false,
+      type: ApplicationCommandOptionType.Integer,
+    }) limit: number | undefined,
+    interaction: CommandInteraction,
+  ): Promise<void> {
     const apiKey = await getApiKey(interaction.user.id);
 
     if (!apiKey) {
@@ -117,8 +187,24 @@ export class MissyCommands {
     await interaction.deferReply({ ephemeral: true });
 
     try {
+      const discordHistory = await buildInteractionHistoryContext(
+        interaction.channel,
+        limit,
+      );
+
+      if (!discordHistory) {
+        await interaction.editReply(
+          "I couldn't read message history in this channel.",
+        );
+        return;
+      }
+
+      const prompt = question?.trim() ||
+        "Analyze this Discord message history. Summarize the main topics, decisions, open questions, and any useful next steps.";
+      const conversationId = getInteractionConversationId(interaction);
+      const context = await getConversationContext(conversationId);
       const reply = await sendMistralMessage(apiKey, {
-        message: "Reply with exactly: Missy is connected.",
+        message: prompt,
         source: "discord-slash",
         discord: {
           userId: interaction.user.id,
@@ -126,7 +212,12 @@ export class MissyCommands {
           channelId: interaction.channelId,
           guildId: interaction.guildId ?? undefined,
         },
+      }, {
+        context,
+        discordHistory,
       });
+
+      await appendConversationTurn(conversationId, prompt, reply);
       await interaction.editReply(fitDiscordMessage(reply));
     } catch (error) {
       if (error instanceof MistralApiError && error.status === 401) {
@@ -139,8 +230,109 @@ export class MissyCommands {
 
       console.error(error);
       await interaction.editReply(
-        "The test message could not be sent to Mistral.",
+        "Missy couldn't analyze this channel history right now.",
       );
+    }
+  }
+
+  @Slash({
+    description: "Clear Missy's saved context for this conversation",
+    name: "clear",
+  })
+  async clear(interaction: CommandInteraction): Promise<void> {
+    const cleared = await clearConversationContext(
+      getInteractionConversationId(interaction),
+    );
+
+    await interaction.reply({
+      content: cleared
+        ? "Cleared this conversation context."
+        : "There was no saved context for this conversation.",
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    description: "Add or replace a local stdio MCP server",
+    name: "mcp-add",
+  })
+  async mcpAdd(
+    @SlashOption({
+      description:
+        "MCP server name, using letters, numbers, underscores, or hyphens",
+      name: "name",
+      required: true,
+      type: ApplicationCommandOptionType.String,
+    }) name: string,
+    @SlashOption({
+      description: "Executable command, for example npx, node, deno, or python",
+      name: "command",
+      required: true,
+      type: ApplicationCommandOptionType.String,
+    }) command: string,
+    @SlashOption({
+      description: "Optional JSON string array of command args",
+      name: "args-json",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) argsJson: string | undefined,
+    @SlashOption({
+      description: "Optional JSON object of environment variables",
+      name: "env-json",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) envJson: string | undefined,
+    interaction: CommandInteraction,
+  ): Promise<void> {
+    if (!canManageMcp(interaction.user.id)) {
+      await interaction.reply({
+        content: MCP_ADMIN_REQUIRED_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    try {
+      const normalizedName = name.trim();
+      const normalizedCommand = command.trim();
+
+      if (!MCP_SERVER_NAME_PATTERN.test(normalizedName)) {
+        await interaction.reply({
+          content:
+            "MCP server names must be 1-32 characters and use only letters, numbers, underscores, or hyphens.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (!normalizedCommand) {
+        await interaction.reply({
+          content: "The MCP command cannot be empty.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const serverConfig: McpServerConfig = {
+        command: normalizedCommand,
+        args: parseOptionalStringArray(argsJson),
+        env: parseOptionalStringRecord(envJson),
+      };
+
+      await addMcpServer(normalizedName, serverConfig);
+      await interaction.reply({
+        content:
+          `Added MCP server \`${normalizedName}\`. Its tools will be available on the next Missy request.`,
+        ephemeral: true,
+      });
+    } catch (error) {
+      console.error(error);
+      await interaction.reply({
+        content: error instanceof Error
+          ? `Could not add that MCP server: ${error.message}`
+          : "Could not add that MCP server.",
+        ephemeral: true,
+      });
     }
   }
 

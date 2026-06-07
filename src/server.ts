@@ -1,7 +1,17 @@
 import { Message } from "discord.js";
 import { getApiKey, removeApiKey } from "./apiKeys.ts";
+import {
+  appendConversationTurn,
+  clearConversationContext,
+  getConversationContext,
+} from "./context.ts";
+import { getMessageConversationId } from "./conversation.ts";
 import { sendTyping } from "./discord.ts";
-import { buildMessageContent } from "./messageContent.ts";
+import { buildDiscordHistoryContext } from "./history.ts";
+import {
+  buildMessageContent,
+  hasMessageCommandPrefix,
+} from "./messageContent.ts";
 import {
   fitDiscordMessage,
   MistralApiError,
@@ -10,6 +20,11 @@ import {
 
 const NEEDS_API_KEY_MESSAGE =
   "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+
+function isClearCommand(content: string): boolean {
+  const command = content.trim().toLowerCase();
+  return command === "clear" || command === "/clear";
+}
 
 async function isReplyToBot(
   message: Message,
@@ -33,9 +48,12 @@ export async function handleServerMessage(
   botUserId: string,
 ): Promise<void> {
   const mentionedBot = message.mentions.users.has(botUserId);
-  const repliedToBot = await isReplyToBot(message, botUserId);
+  const prefixedCommand = hasMessageCommandPrefix(message.content);
+  const repliedToBot = mentionedBot || prefixedCommand
+    ? false
+    : await isReplyToBot(message, botUserId);
 
-  if (!mentionedBot && !repliedToBot) {
+  if (!mentionedBot && !repliedToBot && !prefixedCommand) {
     return;
   }
 
@@ -51,8 +69,18 @@ export async function handleServerMessage(
     return;
   }
 
+  const conversationId = getMessageConversationId(message);
+
+  if (isClearCommand(mistralMessage)) {
+    await clearConversationContext(conversationId);
+    await message.reply("Cleared this conversation context.");
+    return;
+  }
+
   try {
     await sendTyping(message);
+    const context = await getConversationContext(conversationId);
+    const discordHistory = await buildDiscordHistoryContext(message);
     const reply = await sendMistralMessage(apiKey, {
       message: mistralMessage,
       source: "discord-server",
@@ -62,7 +90,11 @@ export async function handleServerMessage(
         channelId: message.channelId,
         guildId: message.guildId ?? undefined,
       },
+    }, {
+      context,
+      discordHistory,
     });
+    await appendConversationTurn(conversationId, mistralMessage, reply);
     await message.reply(fitDiscordMessage(reply));
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {

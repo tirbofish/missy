@@ -9,7 +9,13 @@ export class Main {
   private static client: Client;
 
   static async start(): Promise<void> {
+    const botGuilds = (process.env.DISCORD_GUILD_IDS ?? "")
+      .split(/[,\s]+/)
+      .map((guildId) => guildId.trim())
+      .filter(Boolean);
+
     Main.client = new Client({
+      botGuilds,
       intents: [
         IntentsBitField.Flags.Guilds,
         IntentsBitField.Flags.GuildMessages,
@@ -38,10 +44,14 @@ export class Main {
       }
     });
 
-    Main.client.once(Events.ClientReady, () => {
-      void Main.client.initApplicationCommands();
+    Main.client.once(Events.ClientReady, async () => {
+      await Main.client.initApplicationCommands();
 
-      console.log("Bot started");
+      console.log(
+        botGuilds.length
+          ? `Bot started with guild-scoped commands for ${botGuilds.join(", ")}`
+          : "Bot started with global commands",
+      );
     });
 
     Main.client.on(Events.InteractionCreate, (interaction) => {

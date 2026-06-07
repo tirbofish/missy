@@ -5,6 +5,12 @@ import {
   removeApiKey,
   setApiKey,
 } from "./apiKeys.ts";
+import {
+  appendConversationTurn,
+  clearConversationContext,
+  getConversationContext,
+} from "./context.ts";
+import { getMessageConversationId } from "./conversation.ts";
 import { sendTyping } from "./discord.ts";
 import { buildMessageContent } from "./messageContent.ts";
 import {
@@ -18,6 +24,7 @@ const NEEDS_API_KEY_MESSAGE =
 
 export async function handleDirectMessage(message: Message): Promise<void> {
   const existingApiKey = await getApiKey(message.author.id);
+  const conversationId = getMessageConversationId(message);
 
   if (!existingApiKey) {
     const apiKey = parseApiKeyCandidate(message.content);
@@ -38,8 +45,15 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     return;
   }
 
+  if (mistralMessage.trim().toLowerCase() === "/clear") {
+    await clearConversationContext(conversationId);
+    await message.reply("Cleared this conversation context.");
+    return;
+  }
+
   try {
     await sendTyping(message);
+    const context = await getConversationContext(conversationId);
     const reply = await sendMistralMessage(existingApiKey, {
       message: mistralMessage,
       source: "discord-dm",
@@ -48,7 +62,10 @@ export async function handleDirectMessage(message: Message): Promise<void> {
         username: message.author.tag,
         channelId: message.channelId,
       },
+    }, {
+      context,
     });
+    await appendConversationTurn(conversationId, mistralMessage, reply);
     await message.reply(fitDiscordMessage(reply));
   } catch (error) {
     if (error instanceof MistralApiError && error.status === 401) {
