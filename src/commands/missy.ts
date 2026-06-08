@@ -111,7 +111,14 @@ import {
   formatMistralModelStatus,
   listMistralModels,
 } from "../mistralStatus.ts";
-import { addMcpServer, McpServerConfig } from "../mcp.ts";
+import {
+  addMcpServer,
+  buildOAuthConsentUrl,
+  completeOAuthFlow,
+  McpOAuthConfig,
+  McpServerConfig,
+  OAuthFlowOptions,
+} from "../mcp.ts";
 import {
   clearUserModel,
   defaultMistralModel,
@@ -1613,7 +1620,7 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Add or replace a local stdio MCP server",
+    description: "Add or replace an MCP server (local stdio or remote HTTP)",
     name: "mcp-add",
   })
   async mcpAdd(
@@ -1625,13 +1632,14 @@ export class MissyCommands {
       type: ApplicationCommandOptionType.String,
     }) name: string,
     @SlashOption({
-      description: "Executable command, for example npx, node, deno, or python",
+      description:
+        "Executable command (e.g. npx, node, deno) or a remote URL (https://...)",
       name: "command",
       required: true,
       type: ApplicationCommandOptionType.String,
     }) command: string,
     @SlashOption({
-      description: "Optional JSON string array of command args",
+      description: "Optional JSON string array of command args (stdio only)",
       name: "args-json",
       required: false,
       type: ApplicationCommandOptionType.String,
@@ -1642,6 +1650,42 @@ export class MissyCommands {
       required: false,
       type: ApplicationCommandOptionType.String,
     }) envJson: string | undefined,
+    @SlashOption({
+      description: "OAuth client ID (for remote HTTP servers needing auth)",
+      name: "oauth-client-id",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthClientId: string | undefined,
+    @SlashOption({
+      description: "OAuth client secret (for remote HTTP servers needing auth)",
+      name: "oauth-client-secret",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthClientSecret: string | undefined,
+    @SlashOption({
+      description: "OAuth refresh token (skip interactive flow if provided)",
+      name: "oauth-refresh-token",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthRefreshToken: string | undefined,
+    @SlashOption({
+      description: "OAuth authorize URL (default: Google). e.g. https://login.microsoftonline.com/.../authorize",
+      name: "oauth-auth-url",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthAuthUrl: string | undefined,
+    @SlashOption({
+      description: "OAuth token URL (default: Google). e.g. https://login.microsoftonline.com/.../token",
+      name: "oauth-token-url",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthTokenUrl: string | undefined,
+    @SlashOption({
+      description: "OAuth scopes (space-separated). Default: Gmail + profile scopes",
+      name: "oauth-scopes",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) oauthScopes: string | undefined,
     interaction: CommandInteraction,
   ): Promise<void> {
     if (!canManageMcp(actorFromInteraction(interaction))) {
@@ -1673,10 +1717,75 @@ export class MissyCommands {
         return;
       }
 
+      let oauth: McpOAuthConfig | undefined;
+      const isRemote = /^https?:\/\//i.test(normalizedCommand);
+      const oauthOptions: OAuthFlowOptions = {
+        ...(oauthAuthUrl ? { authUrl: oauthAuthUrl.trim() } : {}),
+        ...(oauthTokenUrl ? { tokenUrl: oauthTokenUrl.trim() } : {}),
+        ...(oauthScopes
+          ? { scopes: oauthScopes.trim().split(/\s+/).filter(Boolean) }
+          : {}),
+      };
+
+      if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
+        oauth = {
+          clientId: oauthClientId.trim(),
+          clientSecret: oauthClientSecret.trim(),
+          refreshToken: oauthRefreshToken.trim(),
+          ...(oauthTokenUrl ? { tokenUrl: oauthTokenUrl.trim() } : {}),
+          ...(oauthAuthUrl ? { authUrl: oauthAuthUrl.trim() } : {}),
+          ...(oauthScopes
+            ? { scopes: oauthScopes.trim().split(/\s+/).filter(Boolean) }
+            : {}),
+        };
+      } else if (oauthClientId && oauthClientSecret && !oauthRefreshToken) {
+        // Start interactive OAuth flow
+        const consentUrl = buildOAuthConsentUrl(
+          oauthClientId.trim(),
+          oauthOptions,
+        );
+        await interaction.reply({
+          content:
+            `Authorize Missy to access this service:\n${consentUrl}\n\nWaiting for you to complete consent (2 min timeout)...`,
+          ephemeral: true,
+        });
+
+        try {
+          await completeOAuthFlow(
+            normalizedName,
+            normalizedCommand,
+            oauthClientId.trim(),
+            oauthClientSecret.trim(),
+            oauthOptions,
+          );
+          await interaction.followUp({
+            content:
+              `MCP server \`${normalizedName}\` authorized and saved. Its tools will be available on the next Missy request.`,
+            ephemeral: true,
+          });
+        } catch (error) {
+          await interaction.followUp({
+            content: error instanceof Error
+              ? `OAuth flow failed: ${error.message}`
+              : "OAuth flow failed.",
+            ephemeral: true,
+          });
+        }
+        return;
+      } else if (oauthClientId || oauthClientSecret || oauthRefreshToken) {
+        await interaction.reply({
+          content:
+            "Provide `oauth-client-id` + `oauth-client-secret` to start an interactive OAuth flow, or all three fields including `oauth-refresh-token` to skip the flow.",
+          ephemeral: true,
+        });
+        return;
+      }
+
       const serverConfig: McpServerConfig = {
         command: normalizedCommand,
         args: parseOptionalStringArray(argsJson),
         env: parseOptionalStringRecord(envJson),
+        ...(oauth ? { oauth } : {}),
       };
 
       await addMcpServer(normalizedName, serverConfig);
