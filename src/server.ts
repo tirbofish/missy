@@ -1,5 +1,6 @@
 import { Message } from "discord.js";
 import { getEffectiveApiKey, removeResolvedApiKey } from "./apiKeys.ts";
+import { buildAutomationPrompt, getMatchingAutomation } from "./automations.ts";
 import {
   appendConversationTurn,
   clearConversationContext,
@@ -30,6 +31,7 @@ import {
   shouldLookPastClearPoint,
 } from "./history.ts";
 import { canAccessLocalComputer } from "./localAccess.ts";
+import { buildMemoryContext, clearUserServerMemories } from "./memories.ts";
 import {
   buildMessageContent,
   buildMessageContentWithReplyContext,
@@ -57,6 +59,17 @@ function isShutdownCommand(content: string): boolean {
   return command === "/shutdown" || command === "shutdown";
 }
 
+function mentionedBotRole(message: Message, botUserId: string): boolean {
+  if (!message.guild || message.mentions.roles.size === 0) {
+    return false;
+  }
+  const botMember = message.guild.members.cache.get(botUserId);
+  if (!botMember) {
+    return false;
+  }
+  return message.mentions.roles.some((role) => botMember.roles.cache.has(role.id));
+}
+
 async function isReplyToBot(
   message: Message,
   botUserId: string,
@@ -79,21 +92,33 @@ export async function handleServerMessage(
   botUserId: string,
 ): Promise<void> {
   try {
-    const mentionedBot = message.mentions.users.has(botUserId);
+    const mentionedBot = message.mentions.users.has(botUserId) ||
+      mentionedBotRole(message, botUserId);
     const prefixedCommand = hasMessageCommandPrefix(message.content);
     const repliedToBot = mentionedBot || prefixedCommand
       ? false
       : await isReplyToBot(message, botUserId);
+    const directInvocation = mentionedBot || repliedToBot || prefixedCommand;
+    const automation = !directInvocation && message.guildId
+      ? await getMatchingAutomation(
+        message.guildId,
+        message.content,
+        message.channelId,
+      )
+      : undefined;
 
-    if (!mentionedBot && !repliedToBot && !prefixedCommand) {
+    if (!directInvocation && !automation) {
       return;
     }
 
     const currentMessageContent = buildMessageContent(message, botUserId);
-    const mistralMessage = await buildMessageContentWithReplyContext(
+    const baseMistralMessage = await buildMessageContentWithReplyContext(
       message,
       botUserId,
     );
+    const mistralMessage = automation && baseMistralMessage
+      ? buildAutomationPrompt(automation, baseMistralMessage)
+      : baseMistralMessage;
     const imageUrls = await buildMessageImageUrlsWithReplyContext(message);
     if (!mistralMessage) {
       await message.reply("Send me a message for Missy.");
@@ -103,28 +128,36 @@ export async function handleServerMessage(
     const conversationId = getMessageConversationId(message);
     const actor = actorFromMessage(message);
 
-    if (isHelpCommand(currentMessageContent)) {
+    if (directInvocation && isHelpCommand(currentMessageContent)) {
       await message.reply(
         buildHelpMessage(canAccessLocalComputer(actor)),
       );
       return;
     }
 
-    if (isSystemPromptRequest(currentMessageContent)) {
+    if (directInvocation && isSystemPromptRequest(currentMessageContent)) {
       await message.reply(SYSTEM_PROMPT_DENIAL_MESSAGE);
       return;
     }
 
-    if (isClearCommand(currentMessageContent)) {
+    if (directInvocation && isClearCommand(currentMessageContent)) {
       await clearConversationContext(conversationId, {
         createdAt: message.createdAt,
         messageId: message.id,
       });
-      await message.reply("Cleared this conversation context.");
+      const clearedMemories = await clearUserServerMemories({
+        guildId: message.guildId ?? undefined,
+        userId: message.author.id,
+      });
+      await message.reply(
+        clearedMemories
+          ? `Cleared this conversation context and ${clearedMemories} user+server memories.`
+          : "Cleared this conversation context.",
+      );
       return;
     }
 
-    if (isShutdownCommand(currentMessageContent)) {
+    if (directInvocation && isShutdownCommand(currentMessageContent)) {
       if (!canShutdownBot(actor)) {
         await message.reply(SHUTDOWN_REQUIRED_MESSAGE);
         return;
@@ -177,6 +210,10 @@ export async function handleServerMessage(
     }
 
     const model = await getEffectiveModel(message.author.id);
+    const memoryContext = await buildMemoryContext({
+      guildId: message.guildId ?? undefined,
+      userId: message.author.id,
+    });
     let reply = await sendMistralMessage(resolvedApiKey.apiKey, {
       message: mistralMessage,
       imageUrls,
@@ -192,6 +229,7 @@ export async function handleServerMessage(
     }, {
       context,
       discordHistory,
+      memoryContext,
       model,
       onToolActivity: (activity) =>
         agentActivity.update(agentToolActivityContent(activity)),
@@ -217,6 +255,7 @@ export async function handleServerMessage(
       }, {
         context,
         discordHistory,
+        memoryContext,
         model,
         onToolActivity: (activity) =>
           agentActivity.update(agentToolActivityContent(activity)),

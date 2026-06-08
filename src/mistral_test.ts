@@ -151,7 +151,7 @@ Deno.test("routes image payloads through chat completions vision content", async
 
     const body = JSON.parse(String(init?.body)) as {
       messages: Array<{ role: string; content: unknown }>;
-      tools?: unknown[];
+      tools?: Array<{ function?: { name?: string } }>;
     };
     const userMessage = body.messages.at(-1);
 
@@ -166,7 +166,10 @@ Deno.test("routes image payloads through chat completions vision content", async
         image_url: "https://cdn.example/image.png",
       },
     ]);
-    assertEquals(body.tools, undefined);
+    assertEquals(
+      body.tools?.map((tool) => tool.function?.name),
+      ["missy_remember"],
+    );
 
     return Promise.resolve(
       new Response(JSON.stringify({
@@ -200,6 +203,63 @@ Deno.test("routes image payloads through chat completions vision content", async
   }
 });
 
+Deno.test("includes memory context and remember tool in chat requests", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = ((url: URL | Request | string, init?: RequestInit) => {
+    const requestUrl = new URL(url.toString());
+    assertEquals(requestUrl.href, "https://api.mistral.ai/v1/chat/completions");
+
+    const body = JSON.parse(String(init?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+      tools?: Array<{ function?: { name?: string } }>;
+    };
+
+    assertEquals(
+      body.messages.some((message) =>
+        message.role === "system" &&
+        typeof message.content === "string" &&
+        message.content.includes("User memories:")
+      ),
+      true,
+    );
+    assertEquals(
+      body.tools?.some((tool) => tool.function?.name === "missy_remember"),
+      true,
+    );
+
+    return Promise.resolve(
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: "got it",
+          },
+        }],
+      })),
+    );
+  }) as typeof fetch;
+
+  try {
+    const reply = await sendMistralMessage("test-key", {
+      message: "what do you know about me?",
+      source: "discord-dm",
+      discord: {
+        userId: "1",
+        username: "tester",
+      },
+    }, {
+      enableMcp: false,
+      memoryContext: "User memories:\n- (u1) likes concise replies",
+      model: "mistral-small-latest",
+      personalityInstruction: "You are Missy.",
+    });
+
+    assertEquals(reply, "got it");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 Deno.test("exposes Brave tools for web search requests", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = Deno.env.get("BRAVE_SEARCH_API_KEY");
@@ -225,6 +285,7 @@ Deno.test("exposes Brave tools for web search requests", async () => {
         "missy_brave_image_search",
         "missy_brave_video_search",
         "missy_brave_news_search",
+        "missy_remember",
       ],
     );
     assertEquals(body.tools?.every((tool) => tool.type === "function"), true);

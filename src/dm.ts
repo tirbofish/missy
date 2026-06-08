@@ -30,6 +30,7 @@ import {
   SYSTEM_PROMPT_DENIAL_MESSAGE,
 } from "./help.ts";
 import { canAccessLocalComputer } from "./localAccess.ts";
+import { buildMemoryContext, clearMemories } from "./memories.ts";
 import {
   buildMessageContent,
   buildMessageContentWithReplyContext,
@@ -116,7 +117,14 @@ export async function handleDirectMessage(message: Message): Promise<void> {
         createdAt: message.createdAt,
         messageId: message.id,
       });
-      await message.reply("Cleared this conversation context.");
+      const clearedMemories = await clearMemories("user", {
+        userId: message.author.id,
+      });
+      await message.reply(
+        clearedMemories
+          ? `Cleared this conversation context and ${clearedMemories} user memories.`
+          : "Cleared this conversation context.",
+      );
       return;
     }
 
@@ -134,6 +142,9 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     }
 
     const model = await getEffectiveModel(message.author.id);
+    const memoryContext = await buildMemoryContext({
+      userId: message.author.id,
+    });
     let reply = await sendMistralMessage(existingApiKey, {
       message: mistralMessage,
       imageUrls,
@@ -147,6 +158,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
       },
     }, {
       context,
+      memoryContext,
       model,
       onToolActivity: (activity) =>
         agentActivity.update(agentToolActivityContent(activity)),
@@ -170,6 +182,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
         },
       }, {
         context,
+        memoryContext,
         model,
         onToolActivity: (activity) =>
           agentActivity.update(agentToolActivityContent(activity)),

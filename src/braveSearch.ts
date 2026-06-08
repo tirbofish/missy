@@ -50,7 +50,7 @@ function commonProperties(maxCount: number): Record<string, unknown> {
     count: {
       type: "integer",
       description:
-        `Maximum results to return. Defaults to 10. Max ${maxCount}.`,
+        `Maximum results to return. Defaults to 5. Max ${maxCount}. Use at least 3 for factual lookups like weather, scores, or prices.`,
     },
     country: {
       type: "string",
@@ -113,14 +113,8 @@ function searchTool(
 export const braveSearchTools: MistralToolDefinition[] = [
   searchTool(
     "web",
-    "Search the web with Brave Search for current, factual, page, URL, source, or general online lookup requests. Prefer this for normal web searches.",
+    "Search the web with Brave Search for current, factual, or general online lookup requests. Returns extracted page content (text, data, code) ready for answering, plus real-time rich data for weather, stocks, sports, and currency when available. Prefer this for normal web searches.",
     {
-      resultFilter: {
-        type: "array",
-        description:
-          "Optional Brave result filters for web search, such as web, news, videos, discussions, faq, infobox, locations.",
-        items: { type: "string" },
-      },
       ...freshnessProperty(),
     },
   ),
@@ -368,10 +362,15 @@ export async function callBraveSearchTool(
   }
 
   const args = parseArgs(rawArguments);
+  const fetcher = options.fetcher ?? fetch;
+
+  if (kind === "web") {
+    return await callBraveWebSearch(args, apiKey, fetcher);
+  }
+
   const url = new URL(`${BRAVE_SEARCH_API_BASE_URL}${endpointByKind[kind]}`);
   addCommonParams(url, kind, args);
 
-  const fetcher = options.fetcher ?? fetch;
   const response = await fetcher(url, {
     headers: {
       Accept: "application/json",
@@ -388,4 +387,124 @@ export async function callBraveSearchTool(
   }
 
   return JSON.stringify(compactResponse(kind, JSON.parse(responseBody)));
+}
+
+async function callBraveWebSearch(
+  args: Record<string, unknown>,
+  apiKey: string,
+  fetcher: Fetcher,
+): Promise<string> {
+  const query = requiredQuery(args);
+  const country = optionalString(args.country) ??
+    Deno.env.get("BRAVE_SEARCH_COUNTRY") ?? DEFAULT_COUNTRY;
+  const searchLang = optionalString(args.searchLang) ??
+    Deno.env.get("BRAVE_SEARCH_LANG") ?? DEFAULT_SEARCH_LANG;
+  const freshness = optionalString(args.freshness);
+  const count = boundedInteger(args.count, 10, maxCountByKind.web);
+
+  // LLM Context endpoint for extracted page content
+  const llmUrl = new URL(`${BRAVE_SEARCH_API_BASE_URL}/llm/context`);
+  llmUrl.searchParams.set("q", query);
+  llmUrl.searchParams.set("count", String(count));
+  llmUrl.searchParams.set("country", country);
+  llmUrl.searchParams.set("search_lang", searchLang);
+  llmUrl.searchParams.set("maximum_number_of_tokens", "4096");
+  llmUrl.searchParams.set("maximum_number_of_urls", "5");
+  llmUrl.searchParams.set("context_threshold_mode", "balanced");
+  if (freshness) {
+    llmUrl.searchParams.set("freshness", freshness);
+  }
+
+  // Regular web search for rich callback (weather, stocks, sports)
+  const richUrl = new URL(`${BRAVE_SEARCH_API_BASE_URL}/web/search`);
+  richUrl.searchParams.set("q", query);
+  richUrl.searchParams.set("count", "1");
+  richUrl.searchParams.set("country", country);
+  richUrl.searchParams.set("search_lang", searchLang);
+  richUrl.searchParams.set("enable_rich_callback", "1");
+
+  const headers = {
+    Accept: "application/json",
+    "Accept-Encoding": "gzip",
+    "X-Subscription-Token": apiKey,
+  };
+
+  const [llmResponse, richSearchResponse] = await Promise.all([
+    fetcher(llmUrl, { headers }),
+    fetcher(richUrl, { headers }).catch(() => null),
+  ]);
+
+  const llmBody = await llmResponse.text();
+
+  if (!llmResponse.ok) {
+    throw new Error(
+      `Brave LLM Context API returned HTTP ${llmResponse.status}: ${llmBody}`,
+    );
+  }
+
+  const llmParsed = JSON.parse(llmBody);
+  const result: Record<string, unknown> = {
+    grounding: llmParsed.grounding,
+  };
+
+  // Fetch rich data if available
+  if (richSearchResponse?.ok) {
+    try {
+      const richSearchBody = JSON.parse(await richSearchResponse.text());
+      const richData = await fetchRichCallback(richSearchBody, apiKey, fetcher);
+      if (richData) {
+        result.rich = richData;
+      }
+    } catch {
+      // Rich data is optional
+    }
+  }
+
+  return JSON.stringify(result);
+}
+
+async function fetchRichCallback(
+  searchResponse: unknown,
+  apiKey: string,
+  fetcher: Fetcher,
+): Promise<unknown | undefined> {
+  if (!searchResponse || typeof searchResponse !== "object") {
+    return undefined;
+  }
+
+  const rich = (searchResponse as Record<string, unknown>).rich;
+  if (!rich || typeof rich !== "object") {
+    return undefined;
+  }
+
+  const hint = (rich as Record<string, unknown>).hint;
+  if (!hint || typeof hint !== "object") {
+    return undefined;
+  }
+
+  const callbackKey = (hint as Record<string, unknown>).callback_key;
+  if (typeof callbackKey !== "string" || !callbackKey) {
+    return undefined;
+  }
+
+  try {
+    const richUrl = new URL(`${BRAVE_SEARCH_API_BASE_URL}/web/rich`);
+    richUrl.searchParams.set("callback_key", callbackKey);
+
+    const response = await fetcher(richUrl, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      return undefined;
+    }
+
+    return JSON.parse(await response.text());
+  } catch {
+    return undefined;
+  }
 }

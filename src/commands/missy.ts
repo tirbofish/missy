@@ -1,10 +1,53 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
+  ApplicationCommandType,
+  AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
+  ChannelType,
   CommandInteraction,
   InteractionContextType,
+  MessageContextMenuCommandInteraction,
+  ModalBuilder,
+  ModalSubmitInteraction,
+  PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
+  TextInputBuilder,
+  TextInputStyle,
+  UserContextMenuCommandInteraction,
 } from "discord.js";
-import { Discord, Slash, SlashOption } from "discordx";
+import {
+  ButtonComponent,
+  ContextMenu,
+  Discord,
+  ModalComponent,
+  SelectMenuComponent,
+  Slash,
+  SlashChoice,
+  SlashOption,
+} from "discordx";
 import { canManageMcp, MCP_ADMIN_REQUIRED_MESSAGE } from "../admin.ts";
+import {
+  addAutomation,
+  Automation,
+  AUTOMATION_ADD_MODAL_ID,
+  AUTOMATION_PROMPT_INPUT_ID,
+  AUTOMATION_TRIGGER_INPUT_ID,
+  automationComponentId,
+  automationEditModalId,
+  automationIdAutocompleteChoices,
+  buildAutomationListMessage,
+  clearAutomations,
+  listAutomations,
+  parseAutomationComponentId,
+  parseAutomationEditModalId,
+  removeAutomation,
+  setAutomationEnabled,
+  updateAutomation,
+} from "../automations.ts";
 import {
   getApiKey,
   getEffectiveApiKey,
@@ -36,6 +79,28 @@ import {
 } from "../discordActor.ts";
 import { canAccessLocalComputer } from "../localAccess.ts";
 import {
+  addMemory,
+  buildMemoryContext,
+  buildMemoryListMessage,
+  buildMessageMemoryContent,
+  buildScopedMemoryListMessage,
+  buildUserMemoryContent,
+  clearMemories,
+  clearUserServerMemories,
+  getScopedMemories,
+  listMemories,
+  MEMORY_CONTENT_INPUT_ID,
+  memoryAddModalId,
+  memoryComponentId,
+  MemoryEntry,
+  memoryIdAutocompleteChoices,
+  MemoryScope,
+  parseMemoryAddModalId,
+  parseMemoryComponentId,
+  parseMemoryScope,
+  removeMemory,
+} from "../memories.ts";
+import {
   agentToolActivityContent,
   createInteractionAgentActivity,
   editReplyWithDiscordMessages,
@@ -60,6 +125,12 @@ import {
   SHUTDOWN_REQUIRED_MESSAGE,
   shutdownBot,
 } from "../shutdown.ts";
+import {
+  buildSkillDetailMessage,
+  buildSkillsOverviewMessage,
+  SKILLS_SELECT_ID,
+  skillSelectOptions,
+} from "../skills.ts";
 
 const NO_API_KEY_MESSAGE =
   "Set a Mistral API key first with `/set-api-key`. You can create one at https://console.mistral.ai/api-keys";
@@ -68,6 +139,277 @@ const COMMAND_CONTEXTS = [
   InteractionContextType.Guild,
   InteractionContextType.BotDM,
 ];
+const GUILD_COMMAND_CONTEXTS = [InteractionContextType.Guild];
+const MEMORY_ACTIONS = ["list", "add", "remove", "clear"] as const;
+const MEMORY_SCOPES = ["user", "server", "user-server"] as const;
+const AUTOMATION_ACTIONS = ["list", "add", "edit", "remove", "clear"] as const;
+const MEMORY_BUTTON_ID_PATTERN =
+  /^missy-memory:(?:add|refresh|clear):(?:user|server|user-server)$/;
+const MEMORY_DELETE_SELECT_ID_PATTERN =
+  /^missy-memory:delete:(?:user|server|user-server)$/;
+const MEMORY_ADD_MODAL_ID_PATTERN =
+  /^missy-memory-add-modal:(?:user|server|user-server)$/;
+const MAX_MEMORY_SELECT_ITEMS = 25;
+const AUTOMATION_COMPONENT_ID_PATTERN =
+  /^missy-automation:(?:add|refresh|toggle:[A-Za-z0-9_-]+|edit:[A-Za-z0-9_-]+|delete:[A-Za-z0-9_-]+)$/;
+const AUTOMATION_EDIT_MODAL_ID_PATTERN =
+  /^missy-automation-edit-modal:[A-Za-z0-9_-]+$/;
+const MAX_AUTOMATION_COMPONENT_ITEMS = 4;
+
+function skillComponents(
+  hasLocalAccess: boolean,
+): ActionRowBuilder<StringSelectMenuBuilder>[] {
+  return [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(SKILLS_SELECT_ID)
+        .setPlaceholder("Choose a skill")
+        .addOptions(skillSelectOptions(hasLocalAccess)),
+    ),
+  ];
+}
+
+function canEditAutomations(
+  interaction: CommandInteraction | ButtonInteraction | ModalSubmitInteraction,
+): boolean {
+  return Boolean(
+    interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild),
+  );
+}
+
+function buildAutomationComponents(
+  automations: readonly Automation[],
+): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(automationComponentId("add"))
+        .setLabel("Add")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(automationComponentId("refresh"))
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+
+  for (
+    const automation of automations.slice(0, MAX_AUTOMATION_COMPONENT_ITEMS)
+  ) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(automationComponentId("toggle", automation.id))
+          .setLabel(automation.enabled ? "Disable" : "Enable")
+          .setStyle(
+            automation.enabled ? ButtonStyle.Secondary : ButtonStyle.Success,
+          ),
+        new ButtonBuilder()
+          .setCustomId(automationComponentId("edit", automation.id))
+          .setLabel(`Edit ${automation.id}`)
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(automationComponentId("delete", automation.id))
+          .setLabel(`Delete ${automation.id}`)
+          .setStyle(ButtonStyle.Danger),
+      ),
+    );
+  }
+
+  return rows;
+}
+
+function automationPanelContent(automations: readonly Automation[]): string {
+  const extraCount = Math.max(
+    0,
+    automations.length - MAX_AUTOMATION_COMPONENT_ITEMS,
+  );
+  const note = extraCount
+    ? `\n\nButtons are shown for the first ${MAX_AUTOMATION_COMPONENT_ITEMS}; use \`/automation action:remove id:<id>\` for ${extraCount} more.`
+    : "";
+
+  return `${buildAutomationListMessage(automations)}${note}`;
+}
+
+function buildAutomationAddModal(): ModalBuilder {
+  const triggerInput = new TextInputBuilder()
+    .setCustomId(AUTOMATION_TRIGGER_INPUT_ID)
+    .setLabel("Trigger text")
+    .setMaxLength(120)
+    .setRequired(true)
+    .setStyle(TextInputStyle.Short);
+  const promptInput = new TextInputBuilder()
+    .setCustomId(AUTOMATION_PROMPT_INPUT_ID)
+    .setLabel("Missy's instruction")
+    .setMaxLength(1_000)
+    .setRequired(true)
+    .setStyle(TextInputStyle.Paragraph);
+
+  return new ModalBuilder()
+    .setCustomId(AUTOMATION_ADD_MODAL_ID)
+    .setTitle("Add Missy automation")
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(triggerInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput),
+    );
+}
+
+function buildAutomationEditModal(automation: Automation): ModalBuilder {
+  const triggerInput = new TextInputBuilder()
+    .setCustomId(AUTOMATION_TRIGGER_INPUT_ID)
+    .setLabel("Trigger text")
+    .setMaxLength(120)
+    .setRequired(true)
+    .setStyle(TextInputStyle.Short)
+    .setValue(automation.trigger);
+  const promptInput = new TextInputBuilder()
+    .setCustomId(AUTOMATION_PROMPT_INPUT_ID)
+    .setLabel("Missy's instruction")
+    .setMaxLength(1_000)
+    .setRequired(true)
+    .setStyle(TextInputStyle.Paragraph)
+    .setValue(automation.prompt);
+
+  return new ModalBuilder()
+    .setCustomId(automationEditModalId(automation.id))
+    .setTitle(`Edit automation ${automation.id}`)
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(triggerInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput),
+    );
+}
+
+function canEditMemoryScope(
+  interaction:
+    | ButtonInteraction
+    | CommandInteraction
+    | ModalSubmitInteraction
+    | StringSelectMenuInteraction,
+  scope: MemoryScope,
+): boolean {
+  return scope !== "server" ||
+    Boolean(
+      interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild),
+    );
+}
+
+function truncateComponentText(value: string, maxLength: number): string {
+  return value.length > maxLength
+    ? `${value.slice(0, maxLength - 3)}...`
+    : value;
+}
+
+function buildMemoryComponents(
+  scope: MemoryScope,
+  entries: readonly MemoryEntry[],
+): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(memoryComponentId("add", scope))
+        .setLabel("Add")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(memoryComponentId("refresh", scope))
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(memoryComponentId("clear", scope))
+        .setDisabled(entries.length === 0)
+        .setLabel("Clear")
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+
+  if (entries.length > 0) {
+    rows.push(
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(memoryComponentId("delete", scope))
+          .setPlaceholder("Delete a memory")
+          .addOptions(
+            entries.slice(0, MAX_MEMORY_SELECT_ITEMS).map((entry) => ({
+              description: truncateComponentText(entry.content, 100),
+              label: `Delete ${entry.id}`,
+              value: entry.id,
+            })),
+          ),
+      ),
+    );
+  }
+
+  return rows;
+}
+
+function memoryPanelContent(
+  scope: MemoryScope,
+  entries: readonly MemoryEntry[],
+): string {
+  const extraCount = Math.max(0, entries.length - MAX_MEMORY_SELECT_ITEMS);
+  const serverNote = scope === "server"
+    ? "\n\nServer memory edits require Manage Server permission."
+    : "";
+  const extraNote = extraCount
+    ? `\n\nThe delete menu shows the first ${MAX_MEMORY_SELECT_ITEMS}; use \`/memory action:remove scope:${scope} id:<id>\` for ${extraCount} more.`
+    : "";
+
+  return `${
+    buildScopedMemoryListMessage(scope, entries)
+  }${serverNote}${extraNote}`;
+}
+
+function buildMemoryAddModal(scope: MemoryScope): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId(memoryAddModalId(scope))
+    .setTitle(`Add ${scope} memory`)
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId(MEMORY_CONTENT_INPUT_ID)
+          .setLabel("Memory")
+          .setMaxLength(1_000)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Paragraph),
+      ),
+    );
+}
+
+async function autocompleteMemoryIds(
+  interaction: AutocompleteInteraction,
+): Promise<void> {
+  const scope =
+    parseMemoryScope(interaction.options.getString("scope") ?? "") ??
+      (interaction.guildId ? "user-server" : "user");
+
+  if (!interaction.guildId && (scope === "server" || scope === "user-server")) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = String(interaction.options.getFocused() ?? "");
+  const entries = await listMemories(scope, {
+    guildId: interaction.guildId ?? undefined,
+    userId: interaction.user.id,
+  });
+  await interaction.respond(memoryIdAutocompleteChoices(entries, focused));
+}
+
+async function autocompleteAutomationIds(
+  interaction: AutocompleteInteraction,
+): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = String(interaction.options.getFocused() ?? "");
+  await interaction.respond(
+    automationIdAutocompleteChoices(
+      await listAutomations(interaction.guildId),
+      focused,
+    ),
+  );
+}
 
 function parseOptionalStringArray(value?: string): string[] | undefined {
   if (!value?.trim()) {
@@ -228,6 +570,10 @@ export class MissyCommands {
       const context = shouldUsePriorConversation(message)
         ? await getConversationContext(conversationId)
         : [];
+      const memoryContext = await buildMemoryContext({
+        guildId: interaction.guildId ?? undefined,
+        userId: interaction.user.id,
+      });
       const model = await getEffectiveModel(interaction.user.id);
       const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
         message,
@@ -242,6 +588,7 @@ export class MissyCommands {
         },
       }, {
         context,
+        memoryContext,
         model,
         onToolActivity: (activity) =>
           agentActivity.update(agentToolActivityContent(activity)),
@@ -327,6 +674,10 @@ export class MissyCommands {
       const prompt = question?.trim() ||
         "Analyze this Discord message history. Summarize the main topics, decisions, open questions, and any useful next steps.";
       const context = await getConversationContext(conversationId);
+      const memoryContext = await buildMemoryContext({
+        guildId: interaction.guildId ?? undefined,
+        userId: interaction.user.id,
+      });
       const model = await getEffectiveModel(interaction.user.id);
       const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
         message: prompt,
@@ -342,6 +693,7 @@ export class MissyCommands {
       }, {
         context,
         discordHistory,
+        memoryContext,
         model,
       });
 
@@ -374,9 +726,808 @@ export class MissyCommands {
         messageId: interaction.id,
       },
     );
+    const clearedMemories = await clearUserServerMemories({
+      guildId: interaction.guildId ?? undefined,
+      userId: interaction.user.id,
+    });
 
     await interaction.reply({
-      content: "Cleared this conversation context.",
+      content: clearedMemories
+        ? `Cleared this conversation context and ${clearedMemories} user+server memories.`
+        : "Cleared this conversation context.",
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "List Missy's skills",
+    name: "skills",
+  })
+  async skills(interaction: CommandInteraction): Promise<void> {
+    const actor = actorFromInteraction(interaction);
+    const hasLocalAccess = canAccessLocalComputer(actor);
+
+    await interaction.reply({
+      components: skillComponents(hasLocalAccess),
+      content: buildSkillsOverviewMessage(hasLocalAccess),
+      ephemeral: true,
+    });
+  }
+
+  @SelectMenuComponent({
+    id: SKILLS_SELECT_ID,
+  })
+  async skillsSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+    const hasLocalAccess = canAccessLocalComputer(actorFromInteraction(
+      interaction,
+    ));
+    const skillId = interaction.values.at(0) ?? "";
+
+    await interaction.update({
+      components: skillComponents(hasLocalAccess),
+      content: buildSkillDetailMessage(skillId, hasLocalAccess),
+    });
+  }
+
+  @ContextMenu({
+    contexts: COMMAND_CONTEXTS,
+    name: "Missy: remember message",
+    type: ApplicationCommandType.Message,
+  })
+  async rememberMessage(
+    interaction: MessageContextMenuCommandInteraction,
+  ): Promise<void> {
+    const targetMessage = interaction.targetMessage;
+    const content = buildMessageMemoryContent({
+      attachmentCount: targetMessage.attachments.size,
+      authorLabel: targetMessage.author.tag,
+      content: targetMessage.content,
+    });
+
+    if (!content) {
+      await interaction.reply({
+        content: "That message has no text or attachments to remember.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const scope = interaction.guildId ? "user-server" : "user";
+    const memory = await addMemory(
+      scope,
+      {
+        guildId: interaction.guildId ?? undefined,
+        userId: interaction.user.id,
+      },
+      content,
+      interaction.user.id,
+    );
+
+    await interaction.reply({
+      content: `Saved ${scope} memory \`${memory.id}\` from that message.`,
+      ephemeral: true,
+    });
+  }
+
+  @ContextMenu({
+    contexts: COMMAND_CONTEXTS,
+    name: "Missy: remember user",
+    type: ApplicationCommandType.User,
+  })
+  async rememberUser(
+    interaction: UserContextMenuCommandInteraction,
+  ): Promise<void> {
+    const targetUser = interaction.targetUser;
+    const targetMember = interaction.targetMember;
+    const displayName = targetMember && "displayName" in targetMember
+      ? targetMember.displayName
+      : undefined;
+    const scope = interaction.guildId ? "user-server" : "user";
+    const memory = await addMemory(
+      scope,
+      {
+        guildId: interaction.guildId ?? undefined,
+        userId: targetUser.id,
+      },
+      buildUserMemoryContent({
+        displayName,
+        userId: targetUser.id,
+        username: targetUser.tag,
+      }),
+      interaction.user.id,
+    );
+
+    await interaction.reply({
+      content: `Saved ${scope} memory \`${memory.id}\` for ${targetUser.tag}.`,
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    contexts: COMMAND_CONTEXTS,
+    description: "List, add, remove, or clear persistent memories",
+    name: "memory",
+  })
+  async memory(
+    @SlashChoice(...MEMORY_ACTIONS)
+    @SlashOption({
+      description: "list, add, remove, or clear",
+      name: "action",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    })
+    action: string | undefined,
+    @SlashChoice(...MEMORY_SCOPES)
+    @SlashOption({
+      description: "user, server, or user-server",
+      name: "scope",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    })
+    scope: string | undefined,
+    @SlashOption({
+      description: "Memory text for action:add",
+      name: "content",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) content: string | undefined,
+    @SlashOption({
+      autocomplete: autocompleteMemoryIds,
+      description: "Memory id for action:remove",
+      name: "id",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) id: string | undefined,
+    interaction: CommandInteraction,
+  ): Promise<void> {
+    const normalizedAction = action?.trim().toLowerCase() || "list";
+    const parsedScope = scope
+      ? parseMemoryScope(scope)
+      : interaction.guildId
+      ? "user-server"
+      : "user";
+    const context = {
+      guildId: interaction.guildId ?? undefined,
+      userId: interaction.user.id,
+    };
+
+    if (!parsedScope) {
+      await interaction.reply({
+        content: "Memory scope must be `user`, `server`, or `user-server`.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (
+      !interaction.guildId &&
+      (parsedScope === "server" || parsedScope === "user-server")
+    ) {
+      await interaction.reply({
+        content: "Server-scoped memories can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    try {
+      if (normalizedAction === "list") {
+        const entries = await listMemories(parsedScope, context);
+        await interaction.reply({
+          components: buildMemoryComponents(parsedScope, entries),
+          content: memoryPanelContent(parsedScope, entries),
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (!canEditMemoryScope(interaction, parsedScope)) {
+        await interaction.reply({
+          content:
+            "You need Discord's Manage Server permission to edit server memories.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "add") {
+        if (!content?.trim()) {
+          await interaction.reply({
+            content: "Use `content` with `action:add`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const memory = await addMemory(
+          parsedScope,
+          context,
+          content,
+          interaction.user.id,
+        );
+        await interaction.reply({
+          content:
+            `Saved ${parsedScope} memory \`${memory.id}\`: ${memory.content}`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "remove") {
+        if (!id?.trim()) {
+          await interaction.reply({
+            content: "Use `id` with `action:remove`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const removed = await removeMemory(parsedScope, context, id);
+        await interaction.reply({
+          content: removed
+            ? `Removed ${parsedScope} memory \`${id.trim()}\`.`
+            : `No ${parsedScope} memory found with id \`${id.trim()}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "clear") {
+        const cleared = await clearMemories(parsedScope, context);
+        await interaction.reply({
+          content: `Cleared ${cleared} ${parsedScope} memories.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content: "Memory action must be `list`, `add`, `remove`, or `clear`.",
+        ephemeral: true,
+      });
+    } catch (error) {
+      console.error(error);
+      await interaction.reply({
+        content: error instanceof Error
+          ? `Could not update memories: ${error.message}`
+          : "Could not update memories.",
+        ephemeral: true,
+      });
+    }
+  }
+
+  @ButtonComponent({
+    id: MEMORY_BUTTON_ID_PATTERN,
+  })
+  async memoryButton(interaction: ButtonInteraction): Promise<void> {
+    const component = parseMemoryComponentId(interaction.customId);
+
+    if (!component) {
+      await interaction.reply({
+        content: "That memory control is no longer valid.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (
+      !interaction.guildId &&
+      (component.scope === "server" || component.scope === "user-server")
+    ) {
+      await interaction.reply({
+        content: "Server-scoped memories can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (
+      component.action !== "refresh" &&
+      !canEditMemoryScope(interaction, component.scope)
+    ) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit server memories.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const context = {
+      guildId: interaction.guildId ?? undefined,
+      userId: interaction.user.id,
+    };
+
+    if (component.action === "add") {
+      await interaction.showModal(buildMemoryAddModal(component.scope));
+      return;
+    }
+
+    if (component.action === "clear") {
+      await clearMemories(component.scope, context);
+    }
+
+    const entries = await listMemories(component.scope, context);
+    await interaction.update({
+      components: buildMemoryComponents(component.scope, entries),
+      content: memoryPanelContent(component.scope, entries),
+    });
+  }
+
+  @SelectMenuComponent({
+    id: MEMORY_DELETE_SELECT_ID_PATTERN,
+  })
+  async memoryDeleteSelect(
+    interaction: StringSelectMenuInteraction,
+  ): Promise<void> {
+    const component = parseMemoryComponentId(interaction.customId);
+    const memoryId = interaction.values.at(0);
+
+    if (!component || component.action !== "delete" || !memoryId) {
+      await interaction.reply({
+        content: "That memory delete menu is no longer valid.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (
+      !interaction.guildId &&
+      (component.scope === "server" || component.scope === "user-server")
+    ) {
+      await interaction.reply({
+        content: "Server-scoped memories can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!canEditMemoryScope(interaction, component.scope)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit server memories.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const context = {
+      guildId: interaction.guildId ?? undefined,
+      userId: interaction.user.id,
+    };
+    await removeMemory(component.scope, context, memoryId);
+    const entries = await listMemories(component.scope, context);
+
+    await interaction.update({
+      components: buildMemoryComponents(component.scope, entries),
+      content: memoryPanelContent(component.scope, entries),
+    });
+  }
+
+  @ModalComponent({
+    id: MEMORY_ADD_MODAL_ID_PATTERN,
+  })
+  async memoryAddModal(interaction: ModalSubmitInteraction): Promise<void> {
+    const scope = parseMemoryAddModalId(interaction.customId);
+
+    if (!scope) {
+      await interaction.reply({
+        content: "That memory modal is no longer valid.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (
+      !interaction.guildId &&
+      (scope === "server" || scope === "user-server")
+    ) {
+      await interaction.reply({
+        content: "Server-scoped memories can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!canEditMemoryScope(interaction, scope)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit server memories.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const context = {
+      guildId: interaction.guildId ?? undefined,
+      userId: interaction.user.id,
+    };
+    const memory = await addMemory(
+      scope,
+      context,
+      interaction.fields.getTextInputValue(MEMORY_CONTENT_INPUT_ID),
+      interaction.user.id,
+    );
+    const entries = await listMemories(scope, context);
+
+    await interaction.reply({
+      components: buildMemoryComponents(scope, entries),
+      content: `Saved ${scope} memory \`${memory.id}\`.\n\n${
+        memoryPanelContent(scope, entries)
+      }`,
+      ephemeral: true,
+    });
+  }
+
+  @Slash({
+    contexts: GUILD_COMMAND_CONTEXTS,
+    description: "List, add, edit, remove, or clear server automations",
+    name: "automation",
+  })
+  async automation(
+    @SlashChoice(...AUTOMATION_ACTIONS)
+    @SlashOption({
+      description: "list, add, edit, remove, or clear",
+      name: "action",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    })
+    action: string | undefined,
+    @SlashOption({
+      description: "Trigger text for action:add",
+      name: "trigger",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) trigger: string | undefined,
+    @SlashOption({
+      description: "Instruction Missy should follow for action:add",
+      name: "prompt",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) prompt: string | undefined,
+    @SlashOption({
+      channelTypes: [
+        ChannelType.GuildAnnouncement,
+        ChannelType.GuildForum,
+        ChannelType.GuildMedia,
+        ChannelType.GuildText,
+        ChannelType.PublicThread,
+      ],
+      description:
+        "Optional channel where this automation can trigger for add/edit",
+      name: "channel",
+      required: false,
+      type: ApplicationCommandOptionType.Channel,
+    }) channel: { id: string } | undefined,
+    @SlashOption({
+      autocomplete: autocompleteAutomationIds,
+      description: "Automation id for action:edit or action:remove",
+      name: "id",
+      required: false,
+      type: ApplicationCommandOptionType.String,
+    }) id: string | undefined,
+    interaction: CommandInteraction,
+  ): Promise<void> {
+    const guildId = interaction.guildId;
+
+    if (!guildId) {
+      await interaction.reply({
+        content: "Automations can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const normalizedAction = action?.trim().toLowerCase() || "list";
+
+    if (normalizedAction === "list") {
+      const automations = await listAutomations(guildId);
+      await interaction.reply({
+        components: buildAutomationComponents(automations),
+        content: automationPanelContent(automations),
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!canEditAutomations(interaction)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit automations.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    try {
+      if (normalizedAction === "add") {
+        if (!trigger?.trim() || !prompt?.trim()) {
+          await interaction.reply({
+            content: "Use `trigger` and `prompt` with `action:add`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const automation = await addAutomation(
+          guildId,
+          trigger,
+          prompt,
+          interaction.user.id,
+          channel?.id,
+        );
+        await interaction.reply({
+          content: `Added automation \`${automation.id}\` ${
+            automation.channelId ? `for <#${automation.channelId}> ` : ""
+          }for messages containing \`${automation.trigger}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "edit") {
+        if (!id?.trim()) {
+          await interaction.reply({
+            content: "Use `id` with `action:edit`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!trigger?.trim() && !prompt?.trim() && !channel?.id) {
+          await interaction.reply({
+            content:
+              "Use at least one of `trigger`, `prompt`, or `channel` with `action:edit`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const automation = await updateAutomation(guildId, id, {
+          ...(trigger?.trim() ? { trigger } : {}),
+          ...(prompt?.trim() ? { prompt } : {}),
+          ...(channel?.id ? { channelId: channel.id } : {}),
+        });
+        await interaction.reply({
+          content: automation
+            ? `Updated automation \`${automation.id}\`: ${
+              automation.channelId ? `in <#${automation.channelId}> ` : ""
+            }when message contains \`${automation.trigger}\`.`
+            : `No automation found with id \`${id.trim()}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "remove") {
+        if (!id?.trim()) {
+          await interaction.reply({
+            content: "Use `id` with `action:remove`.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const removed = await removeAutomation(guildId, id);
+        await interaction.reply({
+          content: removed
+            ? `Removed automation \`${id.trim()}\`.`
+            : `No automation found with id \`${id.trim()}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (normalizedAction === "clear") {
+        const cleared = await clearAutomations(guildId);
+        await interaction.reply({
+          content: `Cleared ${cleared} automations.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content:
+          "Automation action must be `list`, `add`, `edit`, `remove`, or `clear`.",
+        ephemeral: true,
+      });
+    } catch (error) {
+      console.error(error);
+      await interaction.reply({
+        content: error instanceof Error
+          ? `Could not update automations: ${error.message}`
+          : "Could not update automations.",
+        ephemeral: true,
+      });
+    }
+  }
+
+  @ButtonComponent({
+    id: AUTOMATION_COMPONENT_ID_PATTERN,
+  })
+  async automationButton(interaction: ButtonInteraction): Promise<void> {
+    const guildId = interaction.guildId;
+    const component = parseAutomationComponentId(interaction.customId);
+
+    if (!guildId || !component) {
+      await interaction.reply({
+        content: "That automation control is no longer valid.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (component.action === "add") {
+      if (!canEditAutomations(interaction)) {
+        await interaction.reply({
+          content:
+            "You need Discord's Manage Server permission to edit automations.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.showModal(buildAutomationAddModal());
+      return;
+    }
+
+    if (component.action === "refresh") {
+      const automations = await listAutomations(guildId);
+      await interaction.update({
+        components: buildAutomationComponents(automations),
+        content: automationPanelContent(automations),
+      });
+      return;
+    }
+
+    if (!canEditAutomations(interaction)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit automations.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const automationId = component.automationId;
+    if (!automationId) {
+      await interaction.reply({
+        content: "That automation control is missing an automation id.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (component.action === "edit") {
+      const automations = await listAutomations(guildId);
+      const automation = automations.find((automation) =>
+        automation.id === automationId
+      );
+
+      if (!automation) {
+        await interaction.reply({
+          content: `No automation found with id \`${automationId}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.showModal(buildAutomationEditModal(automation));
+      return;
+    }
+
+    if (component.action === "delete") {
+      await removeAutomation(guildId, automationId);
+    } else {
+      const automations = await listAutomations(guildId);
+      const automation = automations.find((automation) =>
+        automation.id === automationId
+      );
+      if (automation) {
+        await setAutomationEnabled(guildId, automationId, !automation.enabled);
+      }
+    }
+
+    const automations = await listAutomations(guildId);
+    await interaction.update({
+      components: buildAutomationComponents(automations),
+      content: automationPanelContent(automations),
+    });
+  }
+
+  @ModalComponent({
+    id: AUTOMATION_ADD_MODAL_ID,
+  })
+  async automationAddModal(
+    interaction: ModalSubmitInteraction,
+  ): Promise<void> {
+    const guildId = interaction.guildId;
+
+    if (!guildId) {
+      await interaction.reply({
+        content: "Automations can only be used in a server.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!canEditAutomations(interaction)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit automations.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const automation = await addAutomation(
+      guildId,
+      interaction.fields.getTextInputValue(AUTOMATION_TRIGGER_INPUT_ID),
+      interaction.fields.getTextInputValue(AUTOMATION_PROMPT_INPUT_ID),
+      interaction.user.id,
+    );
+    const automations = await listAutomations(guildId);
+
+    await interaction.reply({
+      components: buildAutomationComponents(automations),
+      content: `Added automation \`${automation.id}\`.\n\n${
+        automationPanelContent(automations)
+      }`,
+      ephemeral: true,
+    });
+  }
+
+  @ModalComponent({
+    id: AUTOMATION_EDIT_MODAL_ID_PATTERN,
+  })
+  async automationEditModal(
+    interaction: ModalSubmitInteraction,
+  ): Promise<void> {
+    const guildId = interaction.guildId;
+    const automationId = parseAutomationEditModalId(interaction.customId);
+
+    if (!guildId || !automationId) {
+      await interaction.reply({
+        content: "That automation modal is no longer valid.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!canEditAutomations(interaction)) {
+      await interaction.reply({
+        content:
+          "You need Discord's Manage Server permission to edit automations.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const automation = await updateAutomation(guildId, automationId, {
+      prompt: interaction.fields.getTextInputValue(
+        AUTOMATION_PROMPT_INPUT_ID,
+      ),
+      trigger: interaction.fields.getTextInputValue(
+        AUTOMATION_TRIGGER_INPUT_ID,
+      ),
+    });
+
+    if (!automation) {
+      await interaction.reply({
+        content: `No automation found with id \`${automationId}\`.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const automations = await listAutomations(guildId);
+    await interaction.reply({
+      components: buildAutomationComponents(automations),
+      content: `Updated automation \`${automation.id}\`.\n\n${
+        automationPanelContent(automations)
+      }`,
       ephemeral: true,
     });
   }

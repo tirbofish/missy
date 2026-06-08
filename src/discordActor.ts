@@ -1,4 +1,4 @@
-import { CommandInteraction, Message } from "discord.js";
+import { CommandInteraction, Message, User } from "discord.js";
 import { PermissionActor } from "./permissions.ts";
 
 type MemberWithRoles = {
@@ -37,8 +37,13 @@ export function actorFromMessage(message: Message): PermissionActor {
   };
 }
 
+type ActorInteraction = {
+  member?: unknown;
+  user: User;
+};
+
 export function actorFromInteraction(
-  interaction: CommandInteraction,
+  interaction: ActorInteraction,
 ): PermissionActor {
   return {
     roleIds: roleIdsFromMember(interaction.member),

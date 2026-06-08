@@ -18,6 +18,7 @@ import {
   McpToolRegistry,
   MistralToolDefinition,
 } from "./mcp.ts";
+import { callMemoryTool, isMemoryTool, memoryTools } from "./memories.ts";
 import {
   canAccessLocalComputer,
   LOCAL_ACCESS_REQUIRED_MESSAGE,
@@ -141,6 +142,7 @@ export type MistralSendOptions = {
   context?: ConversationMessage[];
   discordHistory?: string;
   enableMcp?: boolean;
+  memoryContext?: string;
   model?: string;
   onToolActivity?: (activity: MistralToolActivity) => Promise<void>;
   personalityInstruction?: string;
@@ -193,7 +195,8 @@ function totalContextLength(options: MistralSendOptions): number {
     (total, message) => total + message.content.length,
     0,
   );
-  return contextLength + (options.discordHistory?.length ?? 0);
+  return contextLength + (options.discordHistory?.length ?? 0) +
+    (options.memoryContext?.length ?? 0);
 }
 
 function isShortCasualRequest(message: string): boolean {
@@ -272,6 +275,33 @@ function localAccessContextLabel(payload: MistralMessagePayload): string {
   return payload.discord.guildId
     ? "a Discord server/guild channel"
     : "a Discord DM";
+}
+
+function currentTimeContext(): string {
+  const now = new Date();
+  const format = (tz: string, label: string) => {
+    const time = now.toLocaleString("en-US", {
+      timeZone: tz,
+      weekday: "short",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    return `${label}: ${time}`;
+  };
+
+  return [
+    "Current times:",
+    format("UTC", "UTC"),
+    format("America/New_York", "New York (ET)"),
+    format("America/Los_Angeles", "Los Angeles (PT)"),
+    format("Europe/London", "London (UK)"),
+    format("Australia/Sydney", "Sydney (AEST)"),
+    format("Asia/Tokyo", "Tokyo (JST)"),
+  ].join("\n");
 }
 
 function userIdentityInstruction(payload: MistralMessagePayload): string {
@@ -407,6 +437,8 @@ function getBuiltinToolsForPayload(
     tools.push(...filesystemTools);
   }
 
+  tools.push(...memoryTools);
+
   return tools;
 }
 
@@ -513,6 +545,13 @@ async function callAvailableTool(
       rawArguments,
       options.requestFileOperationApproval,
     );
+  }
+
+  if (isMemoryTool(toolName)) {
+    return await callMemoryTool(toolName, rawArguments, {
+      guildId: payload.discord.guildId,
+      userId: payload.discord.userId,
+    });
   }
 
   return await callMcpTool(registry, toolName, rawArguments);
@@ -810,7 +849,7 @@ function searchInstructionForPayload(payload: MistralMessagePayload): string {
     return "The user asked for web search, but BRAVE_SEARCH_API_KEY is not configured. Do not claim you searched the web.";
   }
 
-  return "You have Brave Search tools for this request because the user asked for current, live, recent, specific web/page, image search, or video search information. Use missy_brave_web_search for normal web lookups, missy_brave_image_search for online image/photo searches, missy_brave_video_search for online video searches, and missy_brave_news_search for recent news. Never answer with only a waiting/checking message; if you use a Brave Search tool, provide the actual answer in this same response.";
+  return "You have Brave Search tools for this request because the user asked for current, live, recent, specific web/page, image search, or video search information. Use missy_brave_web_search for normal web lookups, missy_brave_image_search for online image/photo searches, missy_brave_video_search for online video searches, and missy_brave_news_search for recent news. Never answer with only a waiting/checking message; if you use a Brave Search tool, provide the actual answer in this same response. CRITICAL: Never fabricate specific numbers (temperatures, scores, prices, statistics) that are not explicitly present in the search results. If search results only contain links or page descriptions without the actual data you need, honestly tell the user the search didn't give you the answer — do not guess or invent values.";
 }
 
 function buildMessages(
@@ -831,11 +870,18 @@ function buildMessages(
       role: "system",
       content: `${options.personalityInstruction} ${
         userIdentityInstruction(payload)
-      } Use provided Discord history only as context for the current request. ${
+      } ${currentTimeContext()} Use the user's timezone from memories if known; for other cities, use the pre-computed times above as reference. Use provided Discord history and memories only as context for the current request. Proactively save memories when users share personal facts, preferences, opinions, interests, life details, or anything that would help you be a better friend in future conversations. You do not need to be asked to remember; if someone mentions their job, hobbies, favorite things, relationships, timezone, or any stable fact about themselves, save it. Avoid saving trivial/ephemeral info like what they ate for one meal or momentary moods. Do not announce that you saved a memory unless asked. ${
         searchInstructionForPayload(payload)
       } ${localAccessInstruction}`,
     },
   ];
+
+  if (options.memoryContext) {
+    messages.push({
+      role: "system",
+      content: options.memoryContext,
+    });
+  }
 
   if (options.discordHistory) {
     messages.push({
@@ -894,10 +940,16 @@ function buildInstructions(
     options.personalityInstruction ??
       "You are Missy.",
     userIdentityInstruction(payload),
+    `${currentTimeContext()} Use the user's timezone from memories if known; for other cities, use the pre-computed times above as reference.`,
+    "Use persistent memories only when relevant. Proactively save memories when users share personal facts, preferences, opinions, interests, life details, or anything that would help you be a better friend in future conversations. You do not need to be asked to remember; if someone mentions their job, hobbies, favorite things, relationships, timezone, or any stable fact about themselves, save it. Avoid saving trivial/ephemeral info like what they ate for one meal or momentary moods. Do not announce that you saved a memory unless asked.",
     searchInstructionForPayload(payload),
     "Do not include sources or links unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
     localAccessInstruction,
   ];
+
+  if (options.memoryContext) {
+    instructions.push(options.memoryContext);
+  }
 
   if (options.discordHistory) {
     instructions.push(
@@ -1070,10 +1122,12 @@ async function sendMistralConversationMessage(
             payload,
             options,
           );
+          console.log(`[tool] ${toolName}`, { args: functionCall.arguments, result });
         } catch (error) {
           result = JSON.stringify({
             error: error instanceof Error ? error.message : String(error),
           });
+          console.error(`[tool] ${toolName} ERROR`, { args: functionCall.arguments, error });
         }
 
         if (isFilesystemTool(toolName)) {
@@ -1188,10 +1242,12 @@ async function sendMistralChatMessage(
           payload,
           options,
         );
+        console.log(`[tool] ${toolName}`, { args: toolCall.function?.arguments, result: toolResult });
       } catch (error) {
         toolResult = JSON.stringify({
           error: error instanceof Error ? error.message : String(error),
         });
+        console.error(`[tool] ${toolName} ERROR`, { args: toolCall.function?.arguments, error });
       }
 
       if (isFilesystemTool(toolName)) {

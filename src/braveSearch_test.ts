@@ -1,7 +1,9 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { BRAVE_SEARCH_TOOL_NAMES, callBraveSearchTool } from "./braveSearch.ts";
 
-Deno.test("calls Brave web search with expected endpoint and headers", async () => {
+Deno.test("calls Brave web search using LLM Context with rich callback", async () => {
+  const calls: string[] = [];
+
   const result = await callBraveSearchTool(
     BRAVE_SEARCH_TOOL_NAMES.web,
     {
@@ -16,11 +18,8 @@ Deno.test("calls Brave web search with expected endpoint and headers", async () 
       apiKey: "test-brave-key",
       fetcher: (url: URL | Request | string, init?: RequestInit) => {
         const requestUrl = new URL(url.toString());
+        calls.push(requestUrl.pathname);
 
-        assertEquals(
-          requestUrl.href,
-          "https://api.search.brave.com/res/v1/web/search?q=latest+deno+release&count=20&country=AU&search_lang=en&freshness=pw&ui_lang=en-US&result_filter=web%2Cnews",
-        );
         assertEquals(
           init?.headers,
           {
@@ -30,41 +29,57 @@ Deno.test("calls Brave web search with expected endpoint and headers", async () 
           },
         );
 
-        return Promise.resolve(
-          new Response(JSON.stringify({
-            type: "search",
-            query: { original: "latest deno release" },
-            web: {
-              results: [{
-                title: "Deno 2.5",
-                url: "https://deno.com/blog",
-                description: "Release notes",
-                age: "1 day ago",
-              }],
-            },
-          })),
-        );
+        if (requestUrl.pathname === "/res/v1/llm/context") {
+          assertEquals(requestUrl.searchParams.get("q"), "latest deno release");
+          assertEquals(requestUrl.searchParams.get("count"), "20");
+          assertEquals(requestUrl.searchParams.get("country"), "AU");
+          assertEquals(requestUrl.searchParams.get("search_lang"), "en");
+          assertEquals(requestUrl.searchParams.get("freshness"), "pw");
+
+          return Promise.resolve(
+            new Response(JSON.stringify({
+              grounding: {
+                generic: [{
+                  url: "https://deno.com/blog",
+                  title: "Deno 2.5",
+                  snippets: ["Deno 2.5 has been released with new features."],
+                }],
+              },
+              sources: {
+                "https://deno.com/blog": {
+                  title: "Deno 2.5",
+                  hostname: "deno.com",
+                  age: ["1 day ago"],
+                },
+              },
+            })),
+          );
+        }
+
+        if (requestUrl.pathname === "/res/v1/web/search") {
+          assertEquals(requestUrl.searchParams.get("enable_rich_callback"), "1");
+
+          return Promise.resolve(
+            new Response(JSON.stringify({
+              type: "search",
+              query: { original: "latest deno release" },
+            })),
+          );
+        }
+
+        return Promise.resolve(new Response("{}", { status: 404 }));
       },
     },
   );
 
+  assertEquals(calls.includes("/res/v1/llm/context"), true);
+  assertEquals(calls.includes("/res/v1/web/search"), true);
+
+  const parsed = JSON.parse(result);
+  assertEquals(parsed.grounding.generic[0].title, "Deno 2.5");
   assertEquals(
-    JSON.parse(result),
-    {
-      type: "search",
-      query: { original: "latest deno release" },
-      discussions: [],
-      faq: [],
-      locations: [],
-      news: [],
-      videos: [],
-      web: [{
-        title: "Deno 2.5",
-        url: "https://deno.com/blog",
-        description: "Release notes",
-        age: "1 day ago",
-      }],
-    },
+    parsed.grounding.generic[0].snippets[0],
+    "Deno 2.5 has been released with new features.",
   );
 });
 

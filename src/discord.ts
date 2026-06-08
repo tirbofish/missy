@@ -610,6 +610,18 @@ class MessageAgentActivity implements AgentActivity {
     });
   }
 
+  async finish(_finalReplySent = false): Promise<void> {
+    if (!this.activityMessage) {
+      return;
+    }
+
+    try {
+      await this.activityMessage.delete();
+    } catch {
+      // Message may already be deleted
+    }
+  }
+
   async requestFileOperationApproval(
     request: FileOperationApprovalRequest,
   ): Promise<boolean> {
@@ -635,17 +647,6 @@ class MessageAgentActivity implements AgentActivity {
       approveId,
       denyId,
     );
-  }
-
-  async finish(_finalReplySent = false): Promise<void> {
-    if (!this.activityMessage) {
-      return;
-    }
-
-    await this.activityMessage.edit({
-      components: [],
-      content: buildActivityDoneMessage(),
-    });
   }
 
   private async upsert(options: {
@@ -706,10 +707,11 @@ class InteractionAgentActivity implements AgentActivity {
       return;
     }
 
-    await this.activityMessage.edit({
-      components: [],
-      content: buildActivityDoneMessage(),
-    });
+    try {
+      await this.activityMessage.delete();
+    } catch {
+      // Message may already be deleted
+    }
   }
 
   private async upsert(options: {

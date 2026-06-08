@@ -103,8 +103,23 @@ current command set again.
 - Use `/analyze-history` to ask Missy to inspect recent messages in the current
   channel. The optional `limit` can fetch up to 100 messages.
 - Use `/clear` to clear Missy's saved context for your current DM or server
-  channel conversation. After a clear, Missy ignores earlier channel history
-  unless you explicitly say `look past your clear point`.
+  channel conversation. In servers it also clears the user+server memory scope
+  for the person running it. After a clear, Missy ignores earlier channel
+  history unless you explicitly say `look past your clear point`.
+- Use `/skills` to browse Missy's available skills with a Discord select menu.
+- Use `/memory` to list, add, remove, or clear persistent memories. Scopes are
+  `user`, `server`, and `user-server`; the list view includes buttons, an add
+  modal, and a delete menu for the selected scope. Missy can also save memories
+  during chat when the user asks her to remember something or a stable
+  preference is useful. The `id` field autocompletes saved memories for removal.
+- Right-click a Discord message or user and use `Apps > Missy: remember message`
+  or `Apps > Missy: remember user` to save a memory without copying text into a
+  slash command.
+- Use `/automation` in servers to list, add, edit, remove, or clear
+  trigger-based automations. The list view includes buttons plus add/edit modals
+  for faster management, the `id` field autocompletes configured automations,
+  and slash-command adds or edits can be limited to a specific channel. Editing
+  automations requires Discord's Manage Server permission.
 - Use `/api-key-status` and `/remove-api-key` to manage the server key in a
   server, or your personal key in DMs.
 - Use `/help` to see command and tool availability.
