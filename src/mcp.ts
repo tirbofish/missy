@@ -383,7 +383,11 @@ class McpHttpConnection implements McpTransport {
       return;
     }
 
-    const tokenUrl = this.oauth.tokenUrl ?? "https://oauth2.googleapis.com/token";
+    if (!this.oauth.tokenUrl) {
+      throw new Error(`OAuth token URL is required for MCP ${this.name}.`);
+    }
+
+    const tokenUrl = this.oauth.tokenUrl;
     const response = await fetch(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -609,47 +613,26 @@ const OAUTH_LISTENER_PORT = 8914;
 const OAUTH_REDIRECT_URI = `http://localhost:${OAUTH_LISTENER_PORT}`;
 const OAUTH_TIMEOUT_MS = 120_000;
 
-const DEFAULT_GOOGLE_SCOPES = [
-  // Gmail
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
-  // Google Drive
-  "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/drive.file",
-  // Google Calendar
-  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-  "https://www.googleapis.com/auth/calendar.events.freebusy",
-  "https://www.googleapis.com/auth/calendar.events.readonly",
-  // People API
-  "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/contacts.readonly",
-];
-
-const DEFAULT_AUTH_URL = "https://accounts.google.com/o/oauth2/auth";
-const DEFAULT_TOKEN_URL = "https://oauth2.googleapis.com/token";
-
 export type OAuthSetupResult = {
   consentUrl: string;
   waitForCompletion: () => Promise<void>;
 };
 
 export type OAuthFlowOptions = {
-  authUrl?: string;
-  tokenUrl?: string;
-  scopes?: string[];
+  authUrl: string;
+  tokenUrl: string;
+  scopes: string[];
 };
 
 export function buildOAuthConsentUrl(
   clientId: string,
-  options: OAuthFlowOptions = {},
+  options: OAuthFlowOptions,
 ): string {
-  const authUrl = options.authUrl ?? DEFAULT_AUTH_URL;
-  const scopes = options.scopes ?? DEFAULT_GOOGLE_SCOPES;
-  const url = new URL(authUrl);
+  const url = new URL(options.authUrl);
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", OAUTH_REDIRECT_URI);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", scopes.join(" "));
+  url.searchParams.set("scope", options.scopes.join(" "));
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
   return url.toString();
@@ -660,12 +643,11 @@ export async function completeOAuthFlow(
   serverUrl: string,
   clientId: string,
   clientSecret: string,
-  options: OAuthFlowOptions = {},
+  options: OAuthFlowOptions,
 ): Promise<void> {
-  const tokenUrl = options.tokenUrl ?? DEFAULT_TOKEN_URL;
   const code = await listenForOAuthCode();
 
-  const response = await fetch(tokenUrl, {
+  const response = await fetch(options.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -700,9 +682,9 @@ export async function completeOAuthFlow(
       clientId,
       clientSecret,
       refreshToken: parsed.refresh_token,
-      ...(options.tokenUrl ? { tokenUrl: options.tokenUrl } : {}),
-      ...(options.authUrl ? { authUrl: options.authUrl } : {}),
-      ...(options.scopes ? { scopes: options.scopes } : {}),
+      tokenUrl: options.tokenUrl,
+      authUrl: options.authUrl,
+      scopes: options.scopes,
     },
   });
 }
@@ -717,7 +699,11 @@ function listenForOAuthCode(): Promise<string> {
     const controller = new AbortController();
 
     const server = Deno.serve(
-      { port: OAUTH_LISTENER_PORT, signal: controller.signal, onListen: () => {} },
+      {
+        port: OAUTH_LISTENER_PORT,
+        signal: controller.signal,
+        onListen: () => {},
+      },
       (request) => {
         const url = new URL(request.url);
         const code = url.searchParams.get("code");

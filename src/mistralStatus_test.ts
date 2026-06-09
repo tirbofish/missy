@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { MistralApiError } from "./mistral.ts";
+import { MistralApiError } from "./mistral/mod.ts";
 import {
   formatMistralModelStatus,
   listMistralModels,

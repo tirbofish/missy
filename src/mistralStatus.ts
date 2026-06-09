@@ -1,4 +1,4 @@
-import { MistralApiError } from "./mistral.ts";
+import { MistralApiError } from "./mistral/mod.ts";
 
 const MISTRAL_MODELS_API_URL = "https://api.mistral.ai/v1/models";
 

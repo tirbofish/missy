@@ -1,17 +1,17 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-net --allow-run
 
 /**
- * One-time OAuth setup for remote MCP servers (e.g. Gmail).
+ * One-time OAuth setup for remote MCP servers.
  *
  * Usage:
- *   deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts <server-name> <url> <client-secret-json-path> [scopes...]
+ *   deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts <server-name> <url> <client-secret-json-path> <auth-url> <token-url> <scopes...>
  *
  * Example:
- *   deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts gmail https://gmailmcp.googleapis.com/mcp/v1 ~/Downloads/client_secret_xxx.json https://www.googleapis.com/auth/gmail.readonly
+ *   deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts docs https://example.com/mcp ./client_secret.json https://idp.example.com/oauth/authorize https://idp.example.com/oauth/token documents.read
  *
  * This will:
  *   1. Read client_id and client_secret from the JSON file
- *   2. Open your browser for Google consent
+ *   2. Open your browser for provider consent
  *   3. Catch the localhost redirect
  *   4. Exchange the code for a refresh token
  *   5. Save everything to mcp.json
@@ -56,60 +56,55 @@ async function openBrowser(url: string): Promise<void> {
   await cmd.output();
 }
 
-async function waitForAuthCode(): Promise<string> {
-  const listener = Deno.listen({ port: LOCALHOST_PORT });
-  console.log(`Waiting for OAuth redirect on http://localhost:${LOCALHOST_PORT} ...`);
-
-  const conn = await listener.accept();
-  const httpConn = Deno.serveHttp(conn);
-  const event = await httpConn.nextRequest();
-
-  if (!event) {
-    listener.close();
-    throw new Error("No request received.");
-  }
-
-  const url = new URL(event.request.url, REDIRECT_URI);
-  const code = url.searchParams.get("code");
-  const error = url.searchParams.get("error");
-
-  if (error) {
-    await event.respondWith(
-      new Response(`<h1>Error: ${error}</h1>`, {
-        headers: { "Content-Type": "text/html" },
-      }),
-    );
-    listener.close();
-    throw new Error(`OAuth error: ${error}`);
-  }
-
-  if (!code) {
-    await event.respondWith(
-      new Response("<h1>No authorization code received.</h1>", {
-        headers: { "Content-Type": "text/html" },
-      }),
-    );
-    listener.close();
-    throw new Error("No authorization code in redirect.");
-  }
-
-  await event.respondWith(
-    new Response(
-      "<h1>Authorization successful!</h1><p>You can close this tab.</p>",
-      { headers: { "Content-Type": "text/html" } },
-    ),
+function waitForAuthCode(): Promise<string> {
+  console.log(
+    `Waiting for OAuth redirect on http://localhost:${LOCALHOST_PORT} ...`,
   );
 
-  listener.close();
-  return code;
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const server = Deno.serve(
+      { port: LOCALHOST_PORT, signal: controller.signal, onListen: () => {} },
+      (request) => {
+        const url = new URL(request.url, REDIRECT_URI);
+        const code = url.searchParams.get("code");
+        const error = url.searchParams.get("error");
+
+        if (error) {
+          controller.abort();
+          reject(new Error(`OAuth error: ${error}`));
+          return new Response(`<h1>Error: ${error}</h1>`, {
+            headers: { "Content-Type": "text/html" },
+          });
+        }
+
+        if (!code) {
+          return new Response("<h1>No authorization code received.</h1>", {
+            headers: { "Content-Type": "text/html" },
+            status: 400,
+          });
+        }
+
+        resolve(code);
+        setTimeout(() => controller.abort(), 500);
+        return new Response(
+          "<h1>Authorization successful!</h1><p>You can close this tab.</p>",
+          { headers: { "Content-Type": "text/html" } },
+        );
+      },
+    );
+
+    server.finished.catch(() => {});
+  });
 }
 
 async function exchangeCodeForTokens(
   code: string,
   clientId: string,
   clientSecret: string,
+  tokenUrl: string,
 ): Promise<{ accessToken: string; refreshToken: string }> {
-  const response = await fetch("https://oauth2.googleapis.com/token", {
+  const response = await fetch(tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -150,6 +145,9 @@ async function saveMcpConfig(
   clientId: string,
   clientSecret: string,
   refreshToken: string,
+  authUrl: string,
+  tokenUrl: string,
+  scopes: string[],
 ): Promise<void> {
   const configFile = new URL("../mcp.json", import.meta.url);
   let config: { servers?: Record<string, unknown> } = {};
@@ -165,7 +163,14 @@ async function saveMcpConfig(
     ...(config.servers ?? {}),
     [serverName]: {
       command: serverUrl,
-      oauth: { clientId, clientSecret, refreshToken },
+      oauth: {
+        authUrl,
+        clientId,
+        clientSecret,
+        refreshToken,
+        scopes,
+        tokenUrl,
+      },
     },
   };
 
@@ -175,49 +180,41 @@ async function saveMcpConfig(
 
 // --- Main ---
 
-const [serverName, serverUrl, clientSecretPath, ...scopes] = Deno.args;
+const [
+  serverName,
+  serverUrl,
+  clientSecretPath,
+  authUrlArg,
+  tokenUrlArg,
+  ...scopes
+] = Deno.args;
 
-if (!serverName || !serverUrl || !clientSecretPath) {
+if (
+  !serverName || !serverUrl || !clientSecretPath || !authUrlArg ||
+  !tokenUrlArg || scopes.length === 0
+) {
   console.error(
-    "Usage: deno run ... scripts/oauth-setup.ts <name> <url> <client-secret.json> [scopes...]",
+    "Usage: deno run ... scripts/oauth-setup.ts <name> <url> <client-secret.json> <auth-url> <token-url> <scopes...>",
   );
   console.error(
-    "\nExample:\n  deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts gmail https://gmailmcp.googleapis.com/mcp/v1 ./client_secret.json https://www.googleapis.com/auth/gmail.readonly",
+    "\nExample:\n  deno run --allow-read --allow-write --allow-net --allow-run scripts/oauth-setup.ts docs https://example.com/mcp ./client_secret.json https://idp.example.com/oauth/authorize https://idp.example.com/oauth/token documents.read",
   );
   Deno.exit(1);
 }
 
-const defaultScopes = [
-  // Gmail
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
-  // Google Drive
-  "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/drive.file",
-  // Google Calendar
-  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-  "https://www.googleapis.com/auth/calendar.events.freebusy",
-  "https://www.googleapis.com/auth/calendar.events.readonly",
-  // People API
-  "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/contacts.readonly",
-];
-
-const finalScopes = scopes.length > 0 ? scopes : defaultScopes;
-
 console.log(`Setting up OAuth for MCP server: ${serverName}`);
 console.log(`Remote URL: ${serverUrl}`);
-console.log(`Scopes: ${finalScopes.join(", ")}`);
+console.log(`Scopes: ${scopes.join(", ")}`);
 
 const raw = await Deno.readTextFile(clientSecretPath);
 const { clientId, clientSecret } = parseClientSecret(raw);
 console.log(`Client ID: ${clientId}`);
 
-const authUrl = new URL("https://accounts.google.com/o/oauth2/auth");
+const authUrl = new URL(authUrlArg);
 authUrl.searchParams.set("client_id", clientId);
 authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
 authUrl.searchParams.set("response_type", "code");
-authUrl.searchParams.set("scope", finalScopes.join(" "));
+authUrl.searchParams.set("scope", scopes.join(" "));
 authUrl.searchParams.set("access_type", "offline");
 authUrl.searchParams.set("prompt", "consent");
 
@@ -231,8 +228,18 @@ const { refreshToken } = await exchangeCodeForTokens(
   code,
   clientId,
   clientSecret,
+  tokenUrlArg,
 );
 console.log("Got refresh token!");
 
-await saveMcpConfig(serverName, serverUrl, clientId, clientSecret, refreshToken);
-console.log("Done! The Gmail MCP server is ready to use.");
+await saveMcpConfig(
+  serverName,
+  serverUrl,
+  clientId,
+  clientSecret,
+  refreshToken,
+  authUrlArg,
+  tokenUrlArg,
+  scopes,
+);
+console.log("Done! The remote MCP server is ready to use.");

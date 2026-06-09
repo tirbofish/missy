@@ -8,7 +8,7 @@ import {
   shouldShowSourcesForRequest,
   shouldUseWebSearch,
   splitDiscordMessages,
-} from "./mistral.ts";
+} from "./mistral/mod.ts";
 
 Deno.test("splits explicit message separators", () => {
   assertEquals(splitDiscordMessages("first\n---\nsecond"), [
@@ -167,8 +167,12 @@ Deno.test("routes image payloads through chat completions vision content", async
       },
     ]);
     assertEquals(
-      body.tools?.map((tool) => tool.function?.name),
-      ["missy_remember"],
+      body.tools?.some((tool) => tool.function?.name === "missy_remember"),
+      true,
+    );
+    assertEquals(
+      body.tools?.some((tool) => tool.function?.name === "missy_save_skill"),
+      true,
     );
 
     return Promise.resolve(
@@ -278,16 +282,13 @@ Deno.test("exposes Brave tools for web search requests", async () => {
       tools?: Array<{ type: string; function?: { name?: string } }>;
     };
 
-    assertEquals(
-      body.tools?.map((tool) => tool.function?.name),
-      [
-        "missy_brave_web_search",
-        "missy_brave_image_search",
-        "missy_brave_video_search",
-        "missy_brave_news_search",
-        "missy_remember",
-      ],
-    );
+    const toolNames = body.tools?.map((tool) => tool.function?.name) ?? [];
+    assertEquals(toolNames.includes("missy_brave_web_search"), true);
+    assertEquals(toolNames.includes("missy_brave_image_search"), true);
+    assertEquals(toolNames.includes("missy_brave_video_search"), true);
+    assertEquals(toolNames.includes("missy_brave_news_search"), true);
+    assertEquals(toolNames.includes("missy_remember"), true);
+    assertEquals(toolNames.includes("missy_save_skill"), true);
     assertEquals(body.tools?.every((tool) => tool.type === "function"), true);
 
     return Promise.resolve(
@@ -316,6 +317,86 @@ Deno.test("exposes Brave tools for web search requests", async () => {
     });
 
     assertEquals(reply, "Deno has a current release.");
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (originalKey === undefined) {
+      Deno.env.delete("BRAVE_SEARCH_API_KEY");
+    } else {
+      Deno.env.set("BRAVE_SEARCH_API_KEY", originalKey);
+    }
+
+    if (originalEnableSearch === undefined) {
+      Deno.env.delete("BRAVE_ENABLE_SEARCH");
+    } else {
+      Deno.env.set("BRAVE_ENABLE_SEARCH", originalEnableSearch);
+    }
+
+    if (originalUseConversations === undefined) {
+      Deno.env.delete("MISTRAL_USE_CONVERSATIONS");
+    } else {
+      Deno.env.set("MISTRAL_USE_CONVERSATIONS", originalUseConversations);
+    }
+  }
+});
+
+Deno.test("sports schedule prompts require timezone conversion", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = Deno.env.get("BRAVE_SEARCH_API_KEY");
+  const originalEnableSearch = Deno.env.get("BRAVE_ENABLE_SEARCH");
+  const originalUseConversations = Deno.env.get("MISTRAL_USE_CONVERSATIONS");
+
+  Deno.env.set("BRAVE_SEARCH_API_KEY", "test-brave-key");
+  Deno.env.delete("BRAVE_ENABLE_SEARCH");
+  Deno.env.delete("MISTRAL_USE_CONVERSATIONS");
+
+  globalThis.fetch = ((url: URL | Request | string, init?: RequestInit) => {
+    const requestUrl = new URL(url.toString());
+    assertEquals(requestUrl.href, "https://api.mistral.ai/v1/chat/completions");
+
+    const body = JSON.parse(String(init?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    const systemContent = String(body.messages[0]?.content ?? "");
+
+    assertEquals(
+      systemContent.includes(
+        "Never relabel a source time as another timezone",
+      ),
+      true,
+    );
+    assertEquals(
+      systemContent.includes("8:30 PM ET is not 8:30 PM Sydney time"),
+      true,
+    );
+
+    return Promise.resolve(
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: "the next game is 10:30 AM tomorrow in Sydney",
+          },
+        }],
+      })),
+    );
+  }) as typeof fetch;
+
+  try {
+    const reply = await sendMistralMessage("test-key", {
+      message: "when is the next nba game?",
+      source: "discord-dm",
+      discord: {
+        userId: "1",
+        username: "tester",
+      },
+    }, {
+      enableMcp: false,
+      memoryContext: "User memories:\n- (tz1) uses Sydney time",
+      model: "mistral-small-latest",
+      personalityInstruction: "You are Missy.",
+    });
+
+    assertEquals(reply, "the next game is 10:30 AM tomorrow in Sydney");
   } finally {
     globalThis.fetch = originalFetch;
 

@@ -1,3 +1,5 @@
+import { readDataTextFile, writeDataTextFile } from "./dataDir.ts";
+
 export type ApiKeySource = "dm" | "slash" | "guild-slash";
 
 export type ResolvedApiKey = {
@@ -17,8 +19,7 @@ type ApiKeyStore = {
   users: Record<string, StoredApiKey>;
 };
 
-const dataDir = new URL("../data/", import.meta.url);
-const storeFile = new URL("api-keys.json", dataDir);
+const storeFile = "api-keys.json";
 
 let cachedStore: ApiKeyStore | undefined;
 
@@ -28,7 +29,7 @@ async function loadStore(): Promise<ApiKeyStore> {
   }
 
   try {
-    const raw = await Deno.readTextFile(storeFile);
+    const raw = await readDataTextFile(storeFile);
     const parsed = JSON.parse(raw) as Partial<ApiKeyStore>;
     cachedStore = { guilds: parsed.guilds ?? {}, users: parsed.users ?? {} };
   } catch (error) {
@@ -43,8 +44,7 @@ async function loadStore(): Promise<ApiKeyStore> {
 }
 
 async function saveStore(store: ApiKeyStore): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  await writeDataTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 export async function getApiKey(userId: string): Promise<string | undefined> {

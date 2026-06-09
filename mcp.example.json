@@ -1,21 +1,20 @@
 {
   "servers": {
-    "example": {
+    "local_plugin": {
       "command": "node",
       "args": ["path/to/your/mcp-server.js"],
       "env": {}
     },
-    "agent_sdk": {
-      "command": "deno",
-      "args": [
-        "run",
-        "-E",
-        "-R",
-        "--allow-run=powershell",
-        "--allow-net=api.openai.com",
-        "scripts/mcp/agent-sdk-google-computer.ts"
-      ],
-      "env": {}
+    "remote_plugin": {
+      "command": "https://example.com/mcp",
+      "oauth": {
+        "authUrl": "https://idp.example.com/oauth/authorize",
+        "tokenUrl": "https://idp.example.com/oauth/token",
+        "clientId": "client-id",
+        "clientSecret": "client-secret",
+        "refreshToken": "refresh-token",
+        "scopes": ["documents.read"]
+      }
     }
   }
 }

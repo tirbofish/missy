@@ -99,14 +99,17 @@ import {
   parseMemoryComponentId,
   parseMemoryScope,
   removeMemory,
+  saveInferredUserMemories,
 } from "../memories.ts";
 import {
   agentToolActivityContent,
   createInteractionAgentActivity,
   editReplyWithDiscordMessages,
 } from "../discord.ts";
+import { discordServerToolContextFromInteraction } from "../discordServerTools.ts";
 import { buildHelpMessage } from "../help.ts";
-import { MistralApiError, sendMistralMessage } from "../mistral.ts";
+import { MistralApiError } from "../mistral/mod.ts";
+import { sendModelMessage } from "../modelProviders.ts";
 import {
   formatMistralModelStatus,
   listMistralModels,
@@ -140,7 +143,7 @@ import {
 } from "../skills.ts";
 
 const NO_API_KEY_MESSAGE =
-  "Set a Mistral API key first with `/set-api-key`. You can create one at https://console.mistral.ai/api-keys";
+  "Set an API key for the configured model provider first with `/set-api-key`.";
 const MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
 const COMMAND_CONTEXTS = [
   InteractionContextType.Guild,
@@ -464,8 +467,8 @@ async function getInteractionApiKey(
 
 function rejectedApiKeyMessage(resolvedApiKey: ResolvedApiKey): string {
   return resolvedApiKey.scope === "guild"
-    ? "Mistral rejected this server's API key, so I removed it. Run `/set-api-key` with a new key."
-    : "Mistral rejected your API key, so I removed it. Run `/set-api-key` with a new key.";
+    ? "The model provider rejected this server's API key, so I removed it. Run `/set-api-key` with a new key."
+    : "The model provider rejected your API key, so I removed it. Run `/set-api-key` with a new key.";
 }
 
 @Discord()
@@ -505,12 +508,12 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Save a Mistral API key for this server or DM",
+    description: "Save a model provider API key for this server or DM",
     name: "set-api-key",
   })
   async setApiKey(
     @SlashOption({
-      description: "Your Mistral API key",
+      description: "Your model provider API key",
       name: "api-key",
       required: true,
       type: ApplicationCommandOptionType.String,
@@ -531,7 +534,7 @@ export class MissyCommands {
       await setGuildApiKey(interaction.guildId, parsedApiKey);
       await interaction.reply({
         content:
-          "Got it - this server's Mistral API key is saved. Everyone in this server can use Missy with it.",
+          "Got it - this server's model provider API key is saved. Everyone in this server can use Missy with it.",
         ephemeral: true,
       });
       return;
@@ -539,14 +542,14 @@ export class MissyCommands {
 
     await setApiKey(interaction.user.id, parsedApiKey, "slash");
     await interaction.reply({
-      content: "Got it - your Mistral API key is saved.",
+      content: "Got it - your model provider API key is saved.",
       ephemeral: true,
     });
   }
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Chat with Missy using Mistral",
+    description: "Chat with Missy using the configured model provider",
     name: "missy",
   })
   async missy(
@@ -577,12 +580,16 @@ export class MissyCommands {
       const context = shouldUsePriorConversation(message)
         ? await getConversationContext(conversationId)
         : [];
+      await saveInferredUserMemories({
+        guildId: interaction.guildId ?? undefined,
+        userId: interaction.user.id,
+      }, message);
       const memoryContext = await buildMemoryContext({
         guildId: interaction.guildId ?? undefined,
         userId: interaction.user.id,
       });
       const model = await getEffectiveModel(interaction.user.id);
-      const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+      const reply = await sendModelMessage(resolvedApiKey.apiKey, {
         message,
         source: "discord-slash",
         discord: {
@@ -595,6 +602,9 @@ export class MissyCommands {
         },
       }, {
         context,
+        discordServerToolContext: discordServerToolContextFromInteraction(
+          interaction,
+        ),
         memoryContext,
         model,
         onToolActivity: (activity) =>
@@ -622,7 +632,9 @@ export class MissyCommands {
       }
 
       console.error(error);
-      await interaction.editReply("Missy couldn't reach Mistral right now.");
+      await interaction.editReply(
+        "Missy couldn't reach the model provider right now.",
+      );
     }
   }
 
@@ -686,7 +698,7 @@ export class MissyCommands {
         userId: interaction.user.id,
       });
       const model = await getEffectiveModel(interaction.user.id);
-      const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+      const reply = await sendModelMessage(resolvedApiKey.apiKey, {
         message: prompt,
         source: "discord-slash",
         discord: {
@@ -700,6 +712,9 @@ export class MissyCommands {
       }, {
         context,
         discordHistory,
+        discordServerToolContext: discordServerToolContextFromInteraction(
+          interaction,
+        ),
         memoryContext,
         model,
       });
@@ -1555,7 +1570,7 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "View or change your Mistral model",
+    description: "View or change your model",
     name: "model",
   })
   async model(
@@ -1669,19 +1684,19 @@ export class MissyCommands {
       type: ApplicationCommandOptionType.String,
     }) oauthRefreshToken: string | undefined,
     @SlashOption({
-      description: "OAuth authorize URL (default: Google). e.g. https://login.microsoftonline.com/.../authorize",
+      description: "OAuth authorize URL for the remote MCP server",
       name: "oauth-auth-url",
       required: false,
       type: ApplicationCommandOptionType.String,
     }) oauthAuthUrl: string | undefined,
     @SlashOption({
-      description: "OAuth token URL (default: Google). e.g. https://login.microsoftonline.com/.../token",
+      description: "OAuth token URL for the remote MCP server",
       name: "oauth-token-url",
       required: false,
       type: ApplicationCommandOptionType.String,
     }) oauthTokenUrl: string | undefined,
     @SlashOption({
-      description: "OAuth scopes (space-separated). Default: Gmail + profile scopes",
+      description: "OAuth scopes for the remote MCP server (space-separated)",
       name: "oauth-scopes",
       required: false,
       type: ApplicationCommandOptionType.String,
@@ -1719,26 +1734,44 @@ export class MissyCommands {
 
       let oauth: McpOAuthConfig | undefined;
       const isRemote = /^https?:\/\//i.test(normalizedCommand);
-      const oauthOptions: OAuthFlowOptions = {
-        ...(oauthAuthUrl ? { authUrl: oauthAuthUrl.trim() } : {}),
-        ...(oauthTokenUrl ? { tokenUrl: oauthTokenUrl.trim() } : {}),
-        ...(oauthScopes
-          ? { scopes: oauthScopes.trim().split(/\s+/).filter(Boolean) }
-          : {}),
-      };
+      const scopes = oauthScopes?.trim().split(/\s+/).filter(Boolean) ?? [];
+      const oauthOptions = oauthAuthUrl?.trim() && oauthTokenUrl?.trim() &&
+          scopes.length > 0
+        ? {
+          authUrl: oauthAuthUrl.trim(),
+          tokenUrl: oauthTokenUrl.trim(),
+          scopes,
+        } satisfies OAuthFlowOptions
+        : undefined;
 
       if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
+        if (!oauthTokenUrl?.trim()) {
+          await interaction.reply({
+            content:
+              "`oauth-token-url` is required when saving an OAuth refresh token.",
+            ephemeral: true,
+          });
+          return;
+        }
+
         oauth = {
           clientId: oauthClientId.trim(),
           clientSecret: oauthClientSecret.trim(),
           refreshToken: oauthRefreshToken.trim(),
-          ...(oauthTokenUrl ? { tokenUrl: oauthTokenUrl.trim() } : {}),
-          ...(oauthAuthUrl ? { authUrl: oauthAuthUrl.trim() } : {}),
-          ...(oauthScopes
-            ? { scopes: oauthScopes.trim().split(/\s+/).filter(Boolean) }
-            : {}),
+          tokenUrl: oauthTokenUrl.trim(),
+          ...(oauthAuthUrl?.trim() ? { authUrl: oauthAuthUrl.trim() } : {}),
+          ...(scopes.length > 0 ? { scopes } : {}),
         };
       } else if (oauthClientId && oauthClientSecret && !oauthRefreshToken) {
+        if (!oauthOptions) {
+          await interaction.reply({
+            content:
+              "Interactive OAuth requires `oauth-auth-url`, `oauth-token-url`, and `oauth-scopes` from the MCP plugin/provider.",
+            ephemeral: true,
+          });
+          return;
+        }
+
         // Start interactive OAuth flow
         const consentUrl = buildOAuthConsentUrl(
           oauthClientId.trim(),
@@ -1849,7 +1882,8 @@ export class MissyCommands {
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Check whether this context has a saved Mistral API key",
+    description:
+      "Check whether this context has a saved model provider API key",
     name: "api-key-status",
   })
   async status(interaction: CommandInteraction): Promise<void> {
@@ -1859,18 +1893,18 @@ export class MissyCommands {
     await interaction.reply({
       content: interaction.guildId
         ? saved
-          ? "This server has a saved Mistral API key."
-          : "This server doesn't have a saved Mistral API key."
+          ? "This server has a saved model provider API key."
+          : "This server doesn't have a saved model provider API key."
         : saved
-        ? "You have a saved Mistral API key."
-        : "You don't have a saved Mistral API key.",
+        ? "You have a saved model provider API key."
+        : "You don't have a saved model provider API key.",
       ephemeral: true,
     });
   }
 
   @Slash({
     contexts: COMMAND_CONTEXTS,
-    description: "Remove the saved Mistral API key for this context",
+    description: "Remove the saved model provider API key for this context",
     name: "remove-api-key",
   })
   async remove(interaction: CommandInteraction): Promise<void> {
@@ -1880,11 +1914,11 @@ export class MissyCommands {
     await interaction.reply({
       content: interaction.guildId
         ? removed
-          ? "This server's Mistral API key was removed."
-          : "This server didn't have a saved Mistral API key."
+          ? "This server's model provider API key was removed."
+          : "This server didn't have a saved model provider API key."
         : removed
-        ? "Your Mistral API key was removed."
-        : "You didn't have a saved Mistral API key.",
+        ? "Your model provider API key was removed."
+        : "You didn't have a saved model provider API key.",
       ephemeral: true,
     });
   }

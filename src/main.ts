@@ -5,6 +5,7 @@ import process from "node:process";
 import { handleDirectMessage } from "./dm.ts";
 import { handleMessageReaction } from "./reactions.ts";
 import { handleServerMessage } from "./server.ts";
+import { startScheduledTaskRunner } from "./scheduledTaskRunner.ts";
 
 export class Main {
   private static client: Client;
@@ -20,6 +21,7 @@ export class Main {
       botGuilds,
       intents: [
         IntentsBitField.Flags.Guilds,
+        IntentsBitField.Flags.GuildMembers,
         IntentsBitField.Flags.GuildMessages,
         IntentsBitField.Flags.GuildMessageReactions,
         IntentsBitField.Flags.DirectMessages,
@@ -84,6 +86,7 @@ export class Main {
           }`
           : "Bot started with global commands",
       );
+      startScheduledTaskRunner(Main.client);
     });
 
     Main.client.on(Events.InteractionCreate, (interaction) => {

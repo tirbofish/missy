@@ -6,7 +6,7 @@ export function isCurrentLookupRequest(content: string): boolean {
   }
 
   const currentSignal =
-    /\b(latest|live|current|currently|right now|today|tonight|this week|recent|most recent|score|final score|result|standings|odds|weather|news|finals?|playoffs?|championship|stanley cup|world series|super bowl|matchup|nhl|nba|nfl|mlb|wnba|epl)\b/
+    /\b(latest|live|current|currently|right now|today|tonight|this week|recent|most recent|score|final score|result|standings|odds|weather|news|finals?|playoffs?|championship|stanley cup|world series|super bowl|matchup|nhl|nba|nfl|mlb|wnba|epl|bus|train|tram|ferry|metro|transit|transport|timetable|departure|arrival)\b/
       .test(message);
 
   if (!currentSignal) {

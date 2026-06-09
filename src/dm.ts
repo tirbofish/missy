@@ -30,13 +30,18 @@ import {
   SYSTEM_PROMPT_DENIAL_MESSAGE,
 } from "./help.ts";
 import { canAccessLocalComputer } from "./localAccess.ts";
-import { buildMemoryContext, clearMemories } from "./memories.ts";
+import {
+  buildMemoryContext,
+  clearMemories,
+  saveInferredUserMemories,
+} from "./memories.ts";
 import {
   buildMessageContent,
   buildMessageContentWithReplyContext,
   buildMessageImageUrlsWithReplyContext,
 } from "./messageContent.ts";
-import { MistralApiError, sendMistralMessage } from "./mistral.ts";
+import { MistralApiError } from "./mistral/mod.ts";
+import { sendModelMessage } from "./modelProviders.ts";
 import { getEffectiveModel } from "./models.ts";
 import {
   canShutdownBot,
@@ -45,7 +50,7 @@ import {
 } from "./shutdown.ts";
 
 const NEEDS_API_KEY_MESSAGE =
-  "Send me your Mistral API key first. You can create one at https://console.mistral.ai/api-keys";
+  "Send me your configured model provider API key first.";
 
 function isShutdownCommand(content: string): boolean {
   const command = content.trim().toLowerCase();
@@ -102,7 +107,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
       }
 
       await setApiKey(message.author.id, apiKey, "dm");
-      await message.reply("Got it - your Mistral API key is saved.");
+      await message.reply("Got it - your model provider API key is saved.");
       return;
     }
 
@@ -142,10 +147,13 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     }
 
     const model = await getEffectiveModel(message.author.id);
+    await saveInferredUserMemories({
+      userId: message.author.id,
+    }, mistralMessage);
     const memoryContext = await buildMemoryContext({
       userId: message.author.id,
     });
-    let reply = await sendMistralMessage(existingApiKey, {
+    let reply = await sendModelMessage(existingApiKey, {
       message: mistralMessage,
       imageUrls,
       source: "discord-dm",
@@ -168,7 +176,7 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     });
 
     if (isCurrentLookup && isCurrentLookupWaitingOnlyResponse(reply)) {
-      reply = await sendMistralMessage(existingApiKey, {
+      reply = await sendModelMessage(existingApiKey, {
         message:
           `${mistralMessage}\n\nYou already sent a checking message. Answer now with your best current answer. Do not send another waiting/checking message.`,
         imageUrls,
@@ -204,12 +212,12 @@ export async function handleDirectMessage(message: Message): Promise<void> {
     if (error instanceof MistralApiError && error.status === 401) {
       await removeApiKey(message.author.id);
       await message.reply(
-        "Mistral rejected your API key, so I removed it. Send me a new key, or use `/set-api-key` in a server.",
+        "The model provider rejected your API key, so I removed it. Send me a new key, or use `/set-api-key` in a server.",
       );
       return;
     }
 
     console.error(error);
-    await message.reply("Missy couldn't reach Mistral right now.");
+    await message.reply("Missy couldn't reach the model provider right now.");
   }
 }

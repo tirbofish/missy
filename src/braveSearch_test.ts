@@ -57,7 +57,10 @@ Deno.test("calls Brave web search using LLM Context with rich callback", async (
         }
 
         if (requestUrl.pathname === "/res/v1/web/search") {
-          assertEquals(requestUrl.searchParams.get("enable_rich_callback"), "1");
+          assertEquals(
+            requestUrl.searchParams.get("enable_rich_callback"),
+            "1",
+          );
 
           return Promise.resolve(
             new Response(JSON.stringify({

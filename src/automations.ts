@@ -1,3 +1,5 @@
+import { readDataTextFile, writeDataTextFile } from "./dataDir.ts";
+
 export type Automation = {
   channelId?: string;
   id: string;
@@ -18,8 +20,7 @@ type AutomationStore = {
   servers: Record<string, Automation[]>;
 };
 
-const dataDir = new URL("../data/", import.meta.url);
-const storeFile = new URL("automations.json", dataDir);
+const storeFile = "automations.json";
 const MAX_AUTOMATIONS_PER_SERVER = 50;
 const MAX_TRIGGER_LENGTH = 120;
 const MAX_PROMPT_LENGTH = 1_000;
@@ -33,7 +34,7 @@ async function loadStore(): Promise<AutomationStore> {
   }
 
   try {
-    const raw = await Deno.readTextFile(storeFile);
+    const raw = await readDataTextFile(storeFile);
     const parsed = JSON.parse(raw) as Partial<AutomationStore>;
     cachedStore = { servers: parsed.servers ?? {} };
   } catch (error) {
@@ -48,8 +49,7 @@ async function loadStore(): Promise<AutomationStore> {
 }
 
 async function saveStore(store: AutomationStore): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  await writeDataTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 function normalizeTrigger(trigger: string): string {

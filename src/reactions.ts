@@ -13,7 +13,8 @@ import {
   MediaAttachment,
   visionImageUrls,
 } from "./media.ts";
-import { MistralApiError, sendMistralMessage } from "./mistral.ts";
+import { MistralApiError } from "./mistral/mod.ts";
+import { sendModelMessage } from "./modelProviders.ts";
 import { getEffectiveModel } from "./models.ts";
 
 type ReactionUser = User | PartialUser;
@@ -196,7 +197,7 @@ export async function handleMessageReaction(
   try {
     const model = await getEffectiveModel(resolvedUser.id);
     const displayName = await reactionUserDisplayName(message, resolvedUser);
-    const reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+    const reply = await sendModelMessage(resolvedApiKey.apiKey, {
       imageUrls: visionImageUrls(
         [...message.attachments.values()].map((attachment) => ({
           contentType: attachment.contentType,

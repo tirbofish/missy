@@ -20,6 +20,7 @@ import {
   createMessageAgentActivity,
   replyWithDiscordMessages,
 } from "./discord.ts";
+import { discordServerToolContextFromMessage } from "./discordServerTools.ts";
 import {
   buildHelpMessage,
   isHelpCommand,
@@ -31,14 +32,19 @@ import {
   shouldLookPastClearPoint,
 } from "./history.ts";
 import { canAccessLocalComputer } from "./localAccess.ts";
-import { buildMemoryContext, clearUserServerMemories } from "./memories.ts";
+import {
+  buildMemoryContext,
+  clearUserServerMemories,
+  saveInferredUserMemories,
+} from "./memories.ts";
 import {
   buildMessageContent,
   buildMessageContentWithReplyContext,
   buildMessageImageUrlsWithReplyContext,
   hasMessageCommandPrefix,
 } from "./messageContent.ts";
-import { MistralApiError, sendMistralMessage } from "./mistral.ts";
+import { MistralApiError } from "./mistral/mod.ts";
+import { sendModelMessage } from "./modelProviders.ts";
 import { getEffectiveModel } from "./models.ts";
 import {
   canShutdownBot,
@@ -47,7 +53,7 @@ import {
 } from "./shutdown.ts";
 
 const NEEDS_API_KEY_MESSAGE =
-  "Run `/set-api-key` once in this server first. You can create a Mistral API key at https://console.mistral.ai/api-keys";
+  "Run `/set-api-key` once in this server first with the configured model provider API key.";
 
 function isClearCommand(content: string): boolean {
   const command = content.trim().toLowerCase();
@@ -67,7 +73,9 @@ function mentionedBotRole(message: Message, botUserId: string): boolean {
   if (!botMember) {
     return false;
   }
-  return message.mentions.roles.some((role) => botMember.roles.cache.has(role.id));
+  return message.mentions.roles.some((role) =>
+    botMember.roles.cache.has(role.id)
+  );
 }
 
 async function isReplyToBot(
@@ -210,11 +218,15 @@ export async function handleServerMessage(
     }
 
     const model = await getEffectiveModel(message.author.id);
+    await saveInferredUserMemories({
+      guildId: message.guildId ?? undefined,
+      userId: message.author.id,
+    }, mistralMessage);
     const memoryContext = await buildMemoryContext({
       guildId: message.guildId ?? undefined,
       userId: message.author.id,
     });
-    let reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+    let reply = await sendModelMessage(resolvedApiKey.apiKey, {
       message: mistralMessage,
       imageUrls,
       source: "discord-server",
@@ -231,6 +243,7 @@ export async function handleServerMessage(
       discordHistory,
       memoryContext,
       model,
+      discordServerToolContext: discordServerToolContextFromMessage(message),
       onToolActivity: (activity) =>
         agentActivity.update(agentToolActivityContent(activity)),
       requestFileOperationApproval: canAccessLocalComputer(actor)
@@ -239,7 +252,7 @@ export async function handleServerMessage(
     });
 
     if (isCurrentLookup && isCurrentLookupWaitingOnlyResponse(reply)) {
-      reply = await sendMistralMessage(resolvedApiKey.apiKey, {
+      reply = await sendModelMessage(resolvedApiKey.apiKey, {
         message:
           `${mistralMessage}\n\nYou already sent a checking message. Answer now with your best current answer. Do not send another waiting/checking message.`,
         imageUrls,
@@ -257,6 +270,7 @@ export async function handleServerMessage(
         discordHistory,
         memoryContext,
         model,
+        discordServerToolContext: discordServerToolContextFromMessage(message),
         onToolActivity: (activity) =>
           agentActivity.update(agentToolActivityContent(activity)),
         requestFileOperationApproval: canAccessLocalComputer(actor)
@@ -283,14 +297,14 @@ export async function handleServerMessage(
         await removeResolvedApiKey(resolvedApiKey);
       }
       await message.reply(
-        "Mistral rejected the API key, so I removed it. Run `/set-api-key` with a new key.",
+        "The model provider rejected the API key, so I removed it. Run `/set-api-key` with a new key.",
       );
       return;
     }
 
     console.error(error);
     try {
-      await message.reply("Missy couldn't reach Mistral right now.");
+      await message.reply("Missy couldn't reach the model provider right now.");
     } catch {
       // Message reply itself may fail if the original error was severe.
     }

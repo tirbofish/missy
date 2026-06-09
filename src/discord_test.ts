@@ -86,7 +86,7 @@ Deno.test("builds local upload failure message from attachment filenames", () =>
   );
 });
 
-Deno.test("formats filesystem tool activity updates", () => {
+Deno.test("formats local and external tool activity updates", () => {
   assertEquals(
     agentToolActivityContent({
       toolName: "missy_deno_repl",
@@ -99,10 +99,10 @@ Deno.test("formats filesystem tool activity updates", () => {
   );
   assertEquals(
     agentToolActivityContent({
-      toolName: "missy_filesystem_list",
+      toolName: "plugin_lookup",
       arguments: '{"path":"C:\\\\Users\\\\Thribhu\\\\Pictures"}',
     }),
-    "checking the folder `C:\\Users\\Thribhu\\Pictures`",
+    "using `plugin_lookup`.",
   );
 });
 

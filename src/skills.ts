@@ -7,6 +7,8 @@ export type MissySkillId =
   | "media"
   | "memories"
   | "models"
+  | "self-skills"
+  | "server-tools"
   | "search";
 
 export type MissySkill = {
@@ -45,11 +47,19 @@ const BASE_SKILLS: readonly MissySkill[] = [
   {
     commands: ["/automation"],
     details:
-      "Server automations match trigger text in non-command messages and send Missy a configured instruction. Rules can be server-wide or limited to a channel. The automation panel supports add/edit modals, refresh, enable/disable, delete, and id autocomplete.",
+      "Server automations match trigger text in non-command messages and send Missy a configured instruction. Rules can be server-wide or limited to a channel. The automation panel supports add/edit modals, refresh, enable/disable, delete, and id autocomplete. In normal chat, Missy can also create daily scheduled tasks when asked to message, notify, or run a lookup at a future time.",
     id: "automations",
     name: "automations",
+    description: "Server triggers and natural-language scheduled tasks.",
+  },
+  {
+    commands: ["missy_save_skill", "missy_read_skill"],
+    details:
+      "Missy can save reusable procedures for workflows, API patterns, and automations, then read them back on later requests in the same user or server context. Skills are not for secrets.",
+    id: "self-skills",
+    name: "self-skills",
     description:
-      "Server triggers that can make Missy respond when matching messages appear.",
+      "Self-authored reusable procedures plus daily scheduled task creation from chat.",
   },
   {
     commands: ["/analyze-history"],
@@ -60,13 +70,22 @@ const BASE_SKILLS: readonly MissySkill[] = [
     description: "Recent Discord channel analysis with `/analyze-history`.",
   },
   {
-    commands: ["Brave Search tools"],
+    commands: ["server member/channel/role tools"],
     details:
-      "When Brave Search is configured, current web, image, video, and news searches are exposed only for requests that need live or recent information.",
+      "In a Discord server, Missy can inspect server info, search members by name/nickname/username/id, list channels, list roles, and send a plain text channel message when the user explicitly asks or confirms the exact channel and content. Member search works best with Discord's Server Members intent enabled.",
+    id: "server-tools",
+    name: "server-tools",
+    description:
+      "Discord server awareness for members, roles, channels, and explicit channel posts.",
+  },
+  {
+    commands: ["search provider tools"],
+    details:
+      "When a search provider is configured, current web, image, video, and news searches are exposed only for requests that need live or recent information.",
     id: "search",
     name: "search",
     description:
-      "Current web, image, video, and news lookup when Brave Search is configured.",
+      "Current web, image, video, and news lookup when a search provider is configured.",
   },
   {
     commands: ["attachments", "MISSY_GIF_SEARCH", "MISSY_REACT"],
@@ -75,12 +94,12 @@ const BASE_SKILLS: readonly MissySkill[] = [
     id: "media",
     name: "media",
     description:
-      "Image-aware Mistral requests, GIF search responses, reactions, and local file uploads.",
+      "Image-aware model requests, GIF search responses, reactions, and local file uploads.",
   },
   {
     commands: ["/model", "/status"],
     details:
-      "Users can pick a personal Mistral model or router mode. `/status` checks model availability for the saved API key.",
+      "Users can pick a personal model or router mode. `/status` checks Mistral model availability for the saved API key when using Mistral.",
     id: "models",
     name: "models",
     description:
@@ -97,13 +116,12 @@ const BASE_SKILLS: readonly MissySkill[] = [
 ];
 
 const LOCAL_SKILL: MissySkill = {
-  commands: ["local filesystem tools", "Deno REPL", "MISSY_ATTACH_LOCAL"],
+  commands: ["Deno REPL", "MISSY_ATTACH_LOCAL"],
   details:
-    "Configured users or roles can approve local file inspection, file edits, Deno REPL tasks, and Discord uploads of selected local files.",
+    "Configured users or roles can approve Deno REPL permissions and Discord uploads of selected local files.",
   id: "local-computer",
   name: "local-computer",
-  description:
-    "Approved local filesystem and Deno REPL tasks for configured users or roles.",
+  description: "Approved local Deno REPL tasks for configured users or roles.",
   requiresLocalAccess: true,
 };
 
@@ -133,8 +151,8 @@ export function buildSkillsMessage(hasLocalAccess: boolean): string {
 export function buildSkillsOverviewMessage(hasLocalAccess: boolean): string {
   const skills = listSkills(hasLocalAccess);
   const localNote = hasLocalAccess
-    ? "Local computer tools are enabled for you."
-    : "Local computer tools are disabled for your Discord user or roles.";
+    ? "Local Deno REPL access is enabled for you."
+    : "Local Deno REPL access is disabled for your Discord user or roles.";
 
   return [
     "Missy skills",

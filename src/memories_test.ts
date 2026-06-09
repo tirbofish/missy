@@ -1,9 +1,13 @@
 import { assertEquals } from "@std/assert";
+import path from "node:path";
 import {
+  addMemory,
+  buildMemoryContext,
   buildMemoryListMessage,
   buildMessageMemoryContent,
   buildScopedMemoryListMessage,
   buildUserMemoryContent,
+  inferredUserMemoryContents,
   memoryAddModalId,
   memoryComponentId,
   memoryIdAutocompleteChoices,
@@ -26,6 +30,20 @@ Deno.test("parses memory scope aliases", () => {
   assertEquals(parseMemoryScope("combined"), "user-server");
   assertEquals(parseMemoryScope("server_user"), "user-server");
   assertEquals(parseMemoryScope("unknown"), undefined);
+});
+
+Deno.test("infers durable self-facts from identity statements", () => {
+  assertEquals(
+    inferredUserMemoryContents("i'm a software engineer and a student"),
+    [
+      "User is a software engineer",
+      "User is a student",
+    ],
+  );
+  assertEquals(
+    inferredUserMemoryContents("im tired and hungry"),
+    [],
+  );
 });
 
 Deno.test("builds context menu message memory content", () => {
@@ -108,4 +126,37 @@ Deno.test("formats scoped memory lists", () => {
     buildScopedMemoryListMessage("server", []),
     "No server memories are saved for this context.",
   );
+});
+
+Deno.test("reads memory file changes dynamically", async () => {
+  const previousDataDir = Deno.env.get("MISSY_DATA_DIR");
+  const dir = await Deno.makeTempDir();
+  Deno.env.set("MISSY_DATA_DIR", dir);
+
+  try {
+    await addMemory(
+      "user",
+      { userId: "dynamic-user" },
+      "likes stale memory",
+      "tester",
+    );
+
+    const memoryFile = path.join(dir, "memories.json");
+    const store = JSON.parse(await Deno.readTextFile(memoryFile));
+    store.users["dynamic-user"][0].content = "likes fresh memory";
+    await Deno.writeTextFile(memoryFile, `${JSON.stringify(store, null, 2)}\n`);
+
+    const context = await buildMemoryContext({ userId: "dynamic-user" });
+
+    assertEquals(context?.includes("likes fresh memory"), true);
+    assertEquals(context?.includes("likes stale memory"), false);
+  } finally {
+    if (previousDataDir === undefined) {
+      Deno.env.delete("MISSY_DATA_DIR");
+    } else {
+      Deno.env.set("MISSY_DATA_DIR", previousDataDir);
+    }
+
+    await Deno.remove(dir, { recursive: true });
+  }
 });

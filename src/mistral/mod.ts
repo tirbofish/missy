@@ -1,30 +1,50 @@
-import { ConversationMessage } from "./context.ts";
+import { ConversationMessage } from "../context.ts";
 import {
-  braveSearchTools,
-  callBraveSearchTool,
-  hasBraveSearchApiKey,
-  isBraveSearchTool,
-} from "./braveSearch.ts";
+  apiTools,
+  callApiTool,
+  isApiTool,
+  shouldUseApiFetch,
+} from "../apiTools.ts";
 import {
   callFilesystemTool,
   FileOperationApprovalHandler,
   FILESYSTEM_TOOL_NAMES,
   filesystemTools,
-} from "./filesystemTools.ts";
+} from "../filesystemTools.ts";
+import {
+  callDiscordServerTool,
+  DiscordServerToolContext,
+  discordServerTools,
+  isDiscordServerTool,
+  shouldUseDiscordServerTools,
+} from "../discordServerTools.ts";
 import {
   callMcpTool,
   filterMcpToolRegistry,
   loadMcpTools,
   McpToolRegistry,
   MistralToolDefinition,
-} from "./mcp.ts";
-import { callMemoryTool, isMemoryTool, memoryTools } from "./memories.ts";
+} from "../mcp.ts";
+import { callMemoryTool, isMemoryTool, memoryTools } from "../memories.ts";
+import {
+  buildSelfSkillContext,
+  callSelfSkillTool,
+  isSelfSkillTool,
+  selfSkillTools,
+} from "../selfSkills.ts";
+import {
+  callScheduledTaskTool,
+  hasSchedulingIntent,
+  isScheduledTaskTool,
+  scheduledTaskTools,
+} from "../scheduledTasks.ts";
 import {
   canAccessLocalComputer,
   LOCAL_ACCESS_REQUIRED_MESSAGE,
-} from "./localAccess.ts";
-import { isCurrentLookupRequest } from "./currentLookup.ts";
-import { defaultMistralModel, isRouterModel } from "./models.ts";
+} from "../localAccess.ts";
+import { isCurrentLookupRequest } from "../currentLookup.ts";
+import { defaultMistralModel, isRouterModel } from "../models.ts";
+import { activeSearchProvider } from "../searchProviders.ts";
 
 const MISTRAL_CHAT_API_URL = "https://api.mistral.ai/v1/chat/completions";
 const MISTRAL_CONVERSATIONS_API_URL = "https://api.mistral.ai/v1/conversations";
@@ -34,8 +54,38 @@ const MAX_TOOL_CALL_ROUNDS = 4;
 const MAX_CONVERSATION_TOOL_ROUNDS = 4;
 const DEFAULT_ROUTER_FAST_MODEL = "mistral-small-latest";
 const DEFAULT_ROUTER_REASONING_MODEL = "mistral-large-latest";
+const instructionDir = new URL("./instructions/", import.meta.url);
+const instructionCache = new Map<string, string>();
 
 type RouterModelRoute = "fast" | "general" | "reasoning" | "tool" | "vision";
+
+function instructionMarkdown(name: string, fallback: string): string {
+  const cached = instructionCache.get(name);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  try {
+    const content = Deno.readTextFileSync(new URL(name, instructionDir)).trim();
+    instructionCache.set(name, content);
+    return content;
+  } catch (error) {
+    console.error(`Could not read Mistral instruction ${name}`, error);
+    instructionCache.set(name, fallback);
+    return fallback;
+  }
+}
+
+function renderInstruction(
+  template: string,
+  values: Record<string, string>,
+): string {
+  return template.replace(
+    /\{\{([A-Z0-9_]+)\}\}/g,
+    (match, key) => values[key] ?? match,
+  );
+}
 
 export class MistralApiError extends Error {
   constructor(
@@ -139,14 +189,19 @@ type MistralConversationResponse = {
 };
 
 export type MistralSendOptions = {
+  chatCompletionsUrl?: string;
+  conversationsApiUrl?: string;
   context?: ConversationMessage[];
   discordHistory?: string;
   enableMcp?: boolean;
+  forceChatCompletions?: boolean;
   memoryContext?: string;
   model?: string;
   onToolActivity?: (activity: MistralToolActivity) => Promise<void>;
   personalityInstruction?: string;
+  discordServerToolContext?: DiscordServerToolContext;
   requestFileOperationApproval?: FileOperationApprovalHandler;
+  selfSkillContext?: string;
 };
 
 export type MistralToolActivity = {
@@ -231,7 +286,10 @@ function routerRouteForPayload(
 
   if (
     hasCurrentLocalFilesystemIntent(payload) ||
-    shouldUseWebSearch(payload.message)
+    shouldUseWebSearch(payload.message) ||
+    shouldUseApiFetch(payload.message) ||
+    hasSchedulingIntent(payload.message) ||
+    shouldUseDiscordServerTools(payload.message)
   ) {
     return "tool";
   }
@@ -302,6 +360,13 @@ function currentTimeContext(): string {
     format("Australia/Sydney", "Sydney (AEST)"),
     format("Asia/Tokyo", "Tokyo (JST)"),
   ].join("\n");
+}
+
+function timeZoneConversionInstruction(): string {
+  return instructionMarkdown(
+    "timezone-conversion.md",
+    "For scheduled events, games, releases, broadcasts, or appointments, preserve the source timezone from search results or source text. If the user wants their local time or has a timezone in memory, convert from the source timezone to that timezone and include the converted date when it changes. Never relabel a source time as another timezone. For example, 8:30 PM ET is not 8:30 PM Sydney time; convert it to the correct Sydney date and time.",
+  );
 }
 
 function userIdentityInstruction(payload: MistralMessagePayload): string {
@@ -398,29 +463,7 @@ function filterMcpToolsForPayload(
   registry: McpToolRegistry,
   payload: MistralMessagePayload,
 ): McpToolRegistry {
-  const localAccess = hasLocalAccess(payload);
-  const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
-
-  return filterMcpToolRegistry(registry, (functionName, entry) => {
-    if (entry.toolName === "computer_task") {
-      return localAccess && localFilesystemIntent && hasOpenAiApiKey();
-    }
-
-    if (
-      entry.toolName === "google_query"
-    ) {
-      return hasOpenAiApiKey();
-    }
-
-    if (
-      entry.toolName === "desktop_list" ||
-      entry.toolName === "desktop_read"
-    ) {
-      return false;
-    }
-
-    return true;
-  });
+  return filterMcpToolRegistry(registry, () => true);
 }
 
 function getBuiltinToolsForPayload(
@@ -429,15 +472,40 @@ function getBuiltinToolsForPayload(
 ): MistralToolDefinition[] {
   const tools: MistralToolDefinition[] = [];
 
-  if (shouldExposeBraveSearchTools(payload)) {
-    tools.push(...braveSearchTools);
+  const searchProvider = activeSearchProvider();
+
+  if (
+    searchProvider?.enabled() && searchProvider.available() &&
+    shouldUseWebSearch(payload.message)
+  ) {
+    tools.push(...searchProvider.tools);
   }
 
   if (hasLocalAccess(payload) && hasCurrentLocalFilesystemIntent(payload)) {
     tools.push(...filesystemTools);
   }
 
+  if (shouldUseApiFetch(payload.message)) {
+    tools.push(...apiTools);
+  }
+
+  if (
+    hasSchedulingIntent(payload.message) &&
+    !payload.message.startsWith("A scheduled Missy task is due now.")
+  ) {
+    tools.push(...scheduledTaskTools);
+  }
+
+  if (
+    options.discordServerToolContext &&
+    payload.discord.guildId &&
+    shouldUseDiscordServerTools(payload.message)
+  ) {
+    tools.push(...discordServerTools);
+  }
+
   tools.push(...memoryTools);
+  tools.push(...selfSkillTools);
 
   return tools;
 }
@@ -525,8 +593,10 @@ async function callAvailableTool(
   payload: MistralMessagePayload,
   options: MistralSendOptions,
 ): Promise<string> {
-  if (isBraveSearchTool(toolName)) {
-    return await callBraveSearchTool(toolName, rawArguments);
+  const searchProvider = activeSearchProvider();
+
+  if (searchProvider?.isTool(toolName)) {
+    return await searchProvider.callTool(toolName, rawArguments);
   }
 
   if (isFilesystemTool(toolName)) {
@@ -536,7 +606,7 @@ async function callAvailableTool(
 
     if (!hasCurrentLocalFilesystemIntent(payload)) {
       throw new Error(
-        "Filesystem tools are available only when the current Discord message explicitly asks to inspect or modify local files.",
+        "The local Deno REPL is available only when the current Discord message explicitly asks to inspect or modify local files.",
       );
     }
 
@@ -554,19 +624,43 @@ async function callAvailableTool(
     });
   }
 
+  if (isSelfSkillTool(toolName)) {
+    return await callSelfSkillTool(toolName, rawArguments, {
+      guildId: payload.discord.guildId,
+      userId: payload.discord.userId,
+    });
+  }
+
+  if (isApiTool(toolName)) {
+    return await callApiTool(toolName, rawArguments);
+  }
+
+  if (isScheduledTaskTool(toolName)) {
+    return await callScheduledTaskTool(toolName, rawArguments, payload);
+  }
+
+  if (isDiscordServerTool(toolName)) {
+    if (!options.discordServerToolContext) {
+      throw new Error(
+        "Discord server tools are available only in a Discord server context.",
+      );
+    }
+
+    return await callDiscordServerTool(
+      toolName,
+      rawArguments,
+      options.discordServerToolContext,
+    );
+  }
+
   return await callMcpTool(registry, toolName, rawArguments);
 }
 
-function braveSearchEnabled(): boolean {
-  return (Deno.env.get("BRAVE_ENABLE_SEARCH") ?? "1") !== "0";
-}
+function conversationApiEnabled(options: MistralSendOptions): boolean {
+  if (options.forceChatCompletions) {
+    return false;
+  }
 
-function shouldExposeBraveSearchTools(payload: MistralMessagePayload): boolean {
-  return braveSearchEnabled() && hasBraveSearchApiKey() &&
-    shouldUseWebSearch(payload.message);
-}
-
-function conversationApiEnabled(): boolean {
   return Deno.env.get("MISTRAL_USE_CONVERSATIONS") === "1";
 }
 
@@ -633,6 +727,8 @@ export function shouldUseWebSearch(message: string): boolean {
     /\b(predict|prediction|predictions|who wins|who won|who lost|who'?s winning|who'?s gonna win|who do you got|who you got|who do you think|who you think|will win|gonna win|going to win|gonna lose|going to lose|what happened|what's happening|any news)\b/
       .test(normalized) ||
     /\b(weather|forecast|temperature|rain|snow|storm|hurricane|tornado|earthquake|wildfire)\b/
+      .test(normalized) ||
+    /\b(bus|train|tram|ferry|metro|route|transit|transport|timetable|departure|arrival|arrive|commute|trip planner)\b/
       .test(normalized) ||
     /\b\w+\s+vs\.?\s+\w+\b/.test(normalized);
 
@@ -746,14 +842,17 @@ async function completeChat(
     body.tool_choice = "auto";
   }
 
-  const response = await fetch(MISTRAL_CHAT_API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const response = await fetch(
+    options.chatCompletionsUrl ?? MISTRAL_CHAT_API_URL,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+  );
 
   const responseBody = await response.text();
 
@@ -772,15 +871,19 @@ async function postMistralConversation(
   apiKey: string,
   path: string,
   body: Record<string, unknown>,
+  options: MistralSendOptions,
 ): Promise<MistralConversationResponse> {
-  const response = await fetch(`${MISTRAL_CONVERSATIONS_API_URL}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const response = await fetch(
+    `${options.conversationsApiUrl ?? MISTRAL_CONVERSATIONS_API_URL}${path}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+  );
   const responseBody = await response.text();
 
   if (!response.ok) {
@@ -797,10 +900,13 @@ async function postMistralConversation(
 async function deleteMistralConversation(
   apiKey: string,
   conversationId: string,
+  options: MistralSendOptions,
 ): Promise<void> {
   try {
     await fetch(
-      `${MISTRAL_CONVERSATIONS_API_URL}/${encodeURIComponent(conversationId)}`,
+      `${options.conversationsApiUrl ?? MISTRAL_CONVERSATIONS_API_URL}/${
+        encodeURIComponent(conversationId)
+      }`,
       {
         method: "DELETE",
         headers: {
@@ -816,40 +922,143 @@ async function deleteMistralConversation(
 async function loadPersonalityInstruction(): Promise<string> {
   try {
     const content = await Deno.readTextFile(
-      new URL("../PERSONALITY.md", import.meta.url),
+      new URL("../../PERSONALITY.md", import.meta.url),
     );
     return [
       content.trim(),
-      "You are not Poke and should not claim to be developed by Interaction.",
-      `When splitting messages, use the exact separator ${DISCORD_MESSAGE_BREAK} on its own line.`,
+      renderInstruction(
+        instructionMarkdown(
+          "personality-append.md",
+          "You are not Poke and should not claim to be developed by Interaction.\n\nWhen splitting messages, use the exact separator {{DISCORD_MESSAGE_BREAK}} on its own line.",
+        ),
+        { DISCORD_MESSAGE_BREAK },
+      ),
     ].join("\n\n");
   } catch (error) {
     console.error("Could not read PERSONALITY.md", error);
-    return [
-      "You are Missy.",
-      "Sound like a warm, concise friend in a group chat rather than a traditional chatbot.",
-      "When asked which option is better, pick a side after briefly weighing the tradeoffs. If the prompt is potentially unsafe, do not choose between harmful options; redirect toward a safer next step.",
-      `Use ${DISCORD_MESSAGE_BREAK} on its own line to split natural multi-message replies.`,
-    ].join("\n");
+    return renderInstruction(
+      instructionMarkdown(
+        "personality-fallback.md",
+        "You are Missy.\n\nSound like a warm, concise friend in a group chat rather than a traditional chatbot.\n\nWhen asked which option is better, pick a side after briefly weighing the tradeoffs. If the prompt is potentially unsafe, do not choose between harmful options; redirect toward a safer next step.\n\nUse {{DISCORD_MESSAGE_BREAK}} on its own line to split natural multi-message replies.",
+      ),
+      { DISCORD_MESSAGE_BREAK },
+    );
   }
 }
 
 function searchInstructionForPayload(payload: MistralMessagePayload): string {
   const searchRequested = shouldUseWebSearch(payload.message);
+  const searchProvider = activeSearchProvider();
 
-  if (!braveSearchEnabled()) {
+  if (!searchProvider?.enabled()) {
     return "Web search tools are disabled. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.";
   }
 
   if (!searchRequested) {
-    return "Brave Search tools are not available for this request because the user did not ask for current, live, recent, specific web/page, image search, or video search information. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.";
+    return "Web search tools are not available for this request because the user did not ask for current, live, recent, specific web/page, image search, or video search information. Do not claim you searched the web. For fresh GIF replies, use MISSY_GIF_SEARCH so the app can resolve it through the GIPHY API.";
   }
 
-  if (!hasBraveSearchApiKey()) {
-    return "The user asked for web search, but BRAVE_SEARCH_API_KEY is not configured. Do not claim you searched the web.";
+  if (!searchProvider.available()) {
+    return searchProvider.unavailableInstruction;
   }
 
-  return "You have Brave Search tools for this request because the user asked for current, live, recent, specific web/page, image search, or video search information. Use missy_brave_web_search for normal web lookups, missy_brave_image_search for online image/photo searches, missy_brave_video_search for online video searches, and missy_brave_news_search for recent news. Never answer with only a waiting/checking message; if you use a Brave Search tool, provide the actual answer in this same response. CRITICAL: Never fabricate specific numbers (temperatures, scores, prices, statistics) that are not explicitly present in the search results. If search results only contain links or page descriptions without the actual data you need, honestly tell the user the search didn't give you the answer — do not guess or invent values.";
+  return searchProvider.toolInstruction;
+}
+
+function memoryInstruction(): string {
+  return instructionMarkdown(
+    "memory.md",
+    "Use persistent memories only when relevant. Proactively save memories when users share personal facts, preferences, opinions, interests, life details, or anything that would help you be a better friend in future conversations. You do not need to be asked to remember; if someone mentions their job, hobbies, favorite things, relationships, timezone, or any stable fact about themselves, save it. Avoid saving trivial/ephemeral info like what they ate for one meal or momentary moods. Do not announce that you saved a memory unless asked.",
+  );
+}
+
+function selfSkillInstruction(context?: string): string {
+  const base =
+    "You can create and use self-authored Missy skills. A skill is a reusable procedure for a workflow, API pattern, or automation. If the user asks you to learn, remember how to do a repeatable task, create an automation pattern, or you discover a durable API workflow, use missy_save_skill. If a known skill appears relevant, read it with missy_read_skill before relying on it. Do not save secrets in skills.";
+
+  return context ? `${base}\n\n${context}` : base;
+}
+
+function automationToolInstruction(payload: MistralMessagePayload): string {
+  const parts = [
+    "When the user asks for a future or recurring reminder, notification, scheduled lookup, or scheduled automation, use missy_schedule_task instead of only describing what to do.",
+    "For scheduled tasks that need current data later, store the full lookup goal in the scheduled task prompt; the task runner will call Missy again at the scheduled time with current web/API tools available.",
+  ];
+
+  if (shouldUseApiFetch(payload.message)) {
+    parts.push(
+      "For public API or documentation lookups, use missy_http_get on specific public URLs when search snippets are not enough. This tool cannot send credentials; if an API needs a key or OAuth, ask the user to configure an MCP server or HTTP JSON search provider.",
+    );
+  }
+
+  return parts.join(" ");
+}
+
+function discordServerToolInstruction(
+  options: MistralSendOptions,
+): string {
+  if (!options.discordServerToolContext) {
+    return "";
+  }
+
+  return "When the user asks about people, users, members, roles, channels, or this Discord server, use the Discord server tools instead of guessing. For questions like 'who is aric?', search members by the requested name and answer from display names, usernames, nicknames, roles, and mentions. Do not claim certainty if the member data is ambiguous or limited. Only send a message to a channel when the user explicitly asks or confirms the exact target/channel and content.";
+}
+
+function sourcesInstruction(): string {
+  return instructionMarkdown(
+    "sources.md",
+    "Do not include sources or links unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
+  );
+}
+
+function localDenoInstruction(
+  payload: MistralMessagePayload,
+  denoTaskGuidance: string,
+): string {
+  return renderInstruction(
+    instructionMarkdown(
+      "local-deno-enabled.md",
+      "Discord user {{USER_ID}} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to use the embedded local Deno REPL from {{CONTEXT_LABEL}}, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. Use ~/Pictures for the user's Pictures folder unless they provide a different path. {{DENO_TASK_GUIDANCE}} To upload/embed a selected local file into Discord, include a line exactly like MISSY_ATTACH_LOCAL: <absolute local file path> in the final reply. The app will request read approval before uploading it. The Deno REPL starts without local permissions; when it requests read/write/run/net/env/etc. access, that exact permission is sent to the user for check/cross approval before the code is rerun with the approved scoped permission.",
+    ),
+    {
+      CONTEXT_LABEL: localAccessContextLabel(payload),
+      DENO_TASK_GUIDANCE: denoTaskGuidance,
+      USER_ID: payload.discord.userId,
+    },
+  );
+}
+
+function localAccessInstructionForPayload(
+  payload: MistralMessagePayload,
+  localFilesystemIntent: boolean,
+  mode: "chat" | "conversation",
+): string {
+  if (hasLocalAccess(payload) && localFilesystemIntent) {
+    const denoTaskGuidance = mode === "chat"
+      ? "For compound local tasks such as locating files and moving them to a folder, picking a random screenshot, or selecting a local image to upload, run the Deno REPL instead of merely describing commands."
+      : "If the user asks about local files, use the Deno REPL when helpful. For compound local tasks such as locating files and moving them to a folder, picking a random screenshot, or selecting a local image to upload, run the Deno REPL instead of merely describing commands.";
+
+    return localDenoInstruction(payload, denoTaskGuidance);
+  }
+
+  if (hasLocalAccess(payload)) {
+    return instructionMarkdown(
+      "local-deno-disabled.md",
+      "The local Deno REPL is disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context.",
+    );
+  }
+
+  return renderInstruction(
+    instructionMarkdown(
+      mode === "chat"
+        ? "local-access-denied-chat.md"
+        : "local-access-denied-conversation.md",
+      mode === "chat"
+        ? "{{LOCAL_ACCESS_REQUIRED_MESSAGE}} Never access local Desktop or computer files and never modify local filesystem paths for this user."
+        : "{{LOCAL_ACCESS_REQUIRED_MESSAGE}} Never move, rename, delete, read, write, copy, create, or list local filesystem paths for this user.",
+    ),
+    { LOCAL_ACCESS_REQUIRED_MESSAGE },
+  );
 }
 
 function buildMessages(
@@ -857,22 +1066,21 @@ function buildMessages(
   options: MistralSendOptions,
 ): MistralChatMessage[] {
   const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
-  const localAccessInstruction =
-    hasLocalAccess(payload) && localFilesystemIntent
-      ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
-        localAccessContextLabel(payload)
-      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. For "home", "home dir", or user-profile requests, pass ~ to the filesystem tools; they resolve it to the bot process user's home directory before asking for approval. Use ~/Pictures for the user's Pictures folder unless they provide a different path. Use available filesystem tools when helpful. For compound local tasks such as locating files and moving them to a folder, picking a random screenshot, or selecting a local image to upload, run the relevant filesystem tool or Deno REPL tool instead of merely describing commands. To upload/embed a selected local file into Discord, include a line exactly like MISSY_ATTACH_LOCAL: <absolute local file path> in the final reply. The app will request approval before uploading it. The Deno REPL starts without local permissions; when it requests read/write/run/net/env/etc. access, that exact permission is sent to the user for check/cross approval before the code is rerun with the approved scoped permission.`
-      : hasLocalAccess(payload)
-      ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
-      : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never access local Desktop or computer files and never modify local filesystem paths for this user.`;
+  const localAccessInstruction = localAccessInstructionForPayload(
+    payload,
+    localFilesystemIntent,
+    "chat",
+  );
   const messages: MistralChatMessage[] = [
     {
       role: "system",
       content: `${options.personalityInstruction} ${
         userIdentityInstruction(payload)
-      } ${currentTimeContext()} Use the user's timezone from memories if known; for other cities, use the pre-computed times above as reference. Use provided Discord history and memories only as context for the current request. Proactively save memories when users share personal facts, preferences, opinions, interests, life details, or anything that would help you be a better friend in future conversations. You do not need to be asked to remember; if someone mentions their job, hobbies, favorite things, relationships, timezone, or any stable fact about themselves, save it. Avoid saving trivial/ephemeral info like what they ate for one meal or momentary moods. Do not announce that you saved a memory unless asked. ${
-        searchInstructionForPayload(payload)
-      } ${localAccessInstruction}`,
+      } ${currentTimeContext()} Use the user's timezone from memories if known; for other cities, use the pre-computed times above as reference. ${timeZoneConversionInstruction()} Use provided Discord history and memories only as context for the current request. ${memoryInstruction()} ${
+        selfSkillInstruction(options.selfSkillContext)
+      } ${automationToolInstruction(payload)} ${
+        discordServerToolInstruction(options)
+      } ${searchInstructionForPayload(payload)} ${localAccessInstruction}`,
     },
   ];
 
@@ -928,22 +1136,23 @@ function buildInstructions(
   options: MistralSendOptions,
 ): string {
   const localFilesystemIntent = hasCurrentLocalFilesystemIntent(payload);
-  const localAccessInstruction =
-    hasLocalAccess(payload) && localFilesystemIntent
-      ? `Discord user ${payload.discord.userId} is listed in MISSY_LOCAL_ACCESS_USER_IDS and is allowed to access local Desktop, computer, and filesystem tools from ${
-        localAccessContextLabel(payload)
-      }, either directly by user ID or through a role in MISSY_LOCAL_ACCESS_ROLE_IDS. Local filesystem access is not limited to the Desktop; use absolute Windows paths such as D:\\ when the user asks for them. Do not tell this user to DM for local access; server access is allowed for this actor. For "home", "home dir", or user-profile requests, pass ~ to the filesystem tools; they resolve it to the bot process user's home directory before asking for approval. Use ~/Pictures for the user's Pictures folder unless they provide a different path. If the user asks about local files, use filesystem tools when helpful. For compound local tasks such as locating files and moving them to a folder, picking a random screenshot, or selecting a local image to upload, run the relevant filesystem tool or Deno REPL tool instead of merely describing commands. To upload/embed a selected local file into Discord, include a line exactly like MISSY_ATTACH_LOCAL: <absolute local file path> in the final reply. The app will request approval before uploading it. The Deno REPL starts without local permissions; when it requests read/write/run/net/env/etc. access, that exact permission is sent to the user for check/cross approval before the code is rerun with the approved scoped permission.`
-      : hasLocalAccess(payload)
-      ? "Local filesystem tools are disabled for this request because the current Discord message does not explicitly ask to inspect or modify local files. Do not infer a local file request from older conversation context."
-      : `${LOCAL_ACCESS_REQUIRED_MESSAGE} Never move, rename, delete, read, write, copy, create, or list local filesystem paths for this user.`;
+  const localAccessInstruction = localAccessInstructionForPayload(
+    payload,
+    localFilesystemIntent,
+    "conversation",
+  );
   const instructions = [
     options.personalityInstruction ??
       "You are Missy.",
     userIdentityInstruction(payload),
     `${currentTimeContext()} Use the user's timezone from memories if known; for other cities, use the pre-computed times above as reference.`,
-    "Use persistent memories only when relevant. Proactively save memories when users share personal facts, preferences, opinions, interests, life details, or anything that would help you be a better friend in future conversations. You do not need to be asked to remember; if someone mentions their job, hobbies, favorite things, relationships, timezone, or any stable fact about themselves, save it. Avoid saving trivial/ephemeral info like what they ate for one meal or momentary moods. Do not announce that you saved a memory unless asked.",
+    timeZoneConversionInstruction(),
+    memoryInstruction(),
+    selfSkillInstruction(options.selfSkillContext),
+    automationToolInstruction(payload),
+    discordServerToolInstruction(options),
     searchInstructionForPayload(payload),
-    "Do not include sources or links unless the user explicitly asked for sources, citations, proof, a URL, a link, or where you found it.",
+    sourcesInstruction(),
     localAccessInstruction,
   ];
 
@@ -1073,18 +1282,23 @@ async function sendMistralConversationMessage(
     ...builtinTools,
     ...registry.tools,
   ];
-  let parsed = await postMistralConversation(apiKey, "", {
-    completion_args: {
-      temperature: 0.3,
-      top_p: 0.95,
+  let parsed = await postMistralConversation(
+    apiKey,
+    "",
+    {
+      completion_args: {
+        temperature: 0.3,
+        top_p: 0.95,
+      },
+      inputs: buildConversationInputs(payload, options),
+      instructions: buildInstructions(payload, options),
+      model: getMistralModel(options),
+      store: true,
+      stream: false,
+      tools,
     },
-    inputs: buildConversationInputs(payload, options),
-    instructions: buildInstructions(payload, options),
-    model: getMistralModel(options),
-    store: true,
-    stream: false,
-    tools,
-  });
+    options,
+  );
   let conversationId = getConversationId(parsed);
   const conversationIds = new Set([conversationId]);
   const filesystemToolResults: string[] = [];
@@ -1122,12 +1336,18 @@ async function sendMistralConversationMessage(
             payload,
             options,
           );
-          console.log(`[tool] ${toolName}`, { args: functionCall.arguments, result });
+          console.log(`[tool] ${toolName}`, {
+            args: functionCall.arguments,
+            result,
+          });
         } catch (error) {
           result = JSON.stringify({
             error: error instanceof Error ? error.message : String(error),
           });
-          console.error(`[tool] ${toolName} ERROR`, { args: functionCall.arguments, error });
+          console.error(`[tool] ${toolName} ERROR`, {
+            args: functionCall.arguments,
+            error,
+          });
         }
 
         if (isFilesystemTool(toolName)) {
@@ -1154,6 +1374,7 @@ async function sendMistralConversationMessage(
           store: true,
           stream: false,
         },
+        options,
       );
       conversationId = getConversationId(parsed);
       conversationIds.add(conversationId);
@@ -1183,7 +1404,7 @@ async function sendMistralConversationMessage(
   } finally {
     if (!conversationStoreEnabled()) {
       for (const storedConversationId of conversationIds) {
-        await deleteMistralConversation(apiKey, storedConversationId);
+        await deleteMistralConversation(apiKey, storedConversationId, options);
       }
     }
   }
@@ -1242,12 +1463,18 @@ async function sendMistralChatMessage(
           payload,
           options,
         );
-        console.log(`[tool] ${toolName}`, { args: toolCall.function?.arguments, result: toolResult });
+        console.log(`[tool] ${toolName}`, {
+          args: toolCall.function?.arguments,
+          result: toolResult,
+        });
       } catch (error) {
         toolResult = JSON.stringify({
           error: error instanceof Error ? error.message : String(error),
         });
-        console.error(`[tool] ${toolName} ERROR`, { args: toolCall.function?.arguments, error });
+        console.error(`[tool] ${toolName} ERROR`, {
+          args: toolCall.function?.arguments,
+          error,
+        });
       }
 
       if (isFilesystemTool(toolName)) {
@@ -1293,12 +1520,17 @@ export async function sendMistralMessage(
     model: resolveMistralModelForPayload(payload, options),
     personalityInstruction: options.personalityInstruction ??
       await loadPersonalityInstruction(),
+    selfSkillContext: options.selfSkillContext ??
+      await buildSelfSkillContext({
+        guildId: payload.discord.guildId,
+        userId: payload.discord.userId,
+      }),
   };
   const registry = options.enableMcp === false
     ? { tools: [], entries: new Map() }
     : filterMcpToolsForPayload(await loadMcpTools(), payload);
 
-  if (conversationApiEnabled() && !hasVisionImages(payload)) {
+  if (conversationApiEnabled(sendOptions) && !hasVisionImages(payload)) {
     return await sendMistralConversationMessage(
       apiKey,
       payload,

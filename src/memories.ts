@@ -1,4 +1,5 @@
 import { MistralToolDefinition } from "./mcp.ts";
+import { readDataTextFile, writeDataTextFile } from "./dataDir.ts";
 
 export type MemoryScope = "user" | "server" | "user-server";
 
@@ -26,46 +27,56 @@ export type MemoryContext = {
   userId: string;
 };
 
-const dataDir = new URL("../data/", import.meta.url);
-const storeFile = new URL("memories.json", dataDir);
+const storeFile = "memories.json";
 const MAX_MEMORY_LENGTH = 1_000;
 const MAX_MEMORIES_PER_SCOPE = 50;
 const MAX_CONTEXT_MENU_MEMORY_LENGTH = 700;
 const MEMORY_COMPONENT_PREFIX = "missy-memory";
+const EPHEMERAL_SELF_DESCRIPTIONS = new Set([
+  "angry",
+  "annoyed",
+  "bored",
+  "busy",
+  "confused",
+  "fine",
+  "good",
+  "happy",
+  "hungry",
+  "mad",
+  "ok",
+  "okay",
+  "sad",
+  "sick",
+  "sleepy",
+  "stressed",
+  "tired",
+  "upset",
+]);
 
 export const MEMORY_TOOL_NAMES = {
   remember: "missy_remember",
 } as const;
 
-let cachedStore: MemoryStore | undefined;
-
 async function loadStore(): Promise<MemoryStore> {
-  if (cachedStore) {
-    return cachedStore;
-  }
-
   try {
-    const raw = await Deno.readTextFile(storeFile);
+    const raw = await readDataTextFile(storeFile);
     const parsed = JSON.parse(raw) as Partial<MemoryStore>;
-    cachedStore = {
+    return {
       servers: parsed.servers ?? {},
       users: parsed.users ?? {},
       userServers: parsed.userServers ?? {},
     };
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      cachedStore = { servers: {}, users: {}, userServers: {} };
-    } else {
-      throw error;
+      return { servers: {}, users: {}, userServers: {} };
     }
-  }
 
-  return cachedStore;
+    throw error;
+  }
 }
 
 async function saveStore(store: MemoryStore): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  await writeDataTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 function userServerKey(guildId: string, userId: string): string {
@@ -74,6 +85,10 @@ function userServerKey(guildId: string, userId: string): string {
 
 function sanitizeMemoryContent(content: string): string {
   return content.trim().replace(/\s+/g, " ").slice(0, MAX_MEMORY_LENGTH);
+}
+
+function normalizeMemoryContent(content: string): string {
+  return sanitizeMemoryContent(content).toLowerCase();
 }
 
 function entriesForScope(
@@ -171,6 +186,102 @@ export async function addMemory(
   setEntriesForScope(store, scope, context, entries);
   await saveStore(store);
   return entry;
+}
+
+function identityPhraseCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  const normalized = content
+    .replace(/<@!?\d+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const patterns = [
+    /\b(?:i'?m|im|i am)\s+((?:an?|the)\s+[^.!?\n]{2,140})/gi,
+    /\bmy\s+(?:job|role|profession|occupation)\s+is\s+((?:an?|the)\s+)?([^.!?\n]{2,100})/gi,
+    /\bi\s+work\s+as\s+((?:an?|the)\s+)?([^.!?\n]{2,100})/gi,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of normalized.matchAll(pattern)) {
+      const phrase = String(match[2] ?? match[1] ?? "").trim();
+
+      if (phrase) {
+        candidates.push(...splitIdentityPhrase(phrase));
+      }
+    }
+  }
+
+  if (/\bi\s+(?:go to|am in|attend)\s+school\b/i.test(normalized)) {
+    candidates.push("student");
+  }
+
+  return [...new Set(candidates.map(cleanIdentityPhrase).filter(Boolean))];
+}
+
+function splitIdentityPhrase(phrase: string): string[] {
+  return phrase
+    .split(/\s*,\s*|\s+and\s+(?:an?\s+)?/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function cleanIdentityPhrase(phrase: string): string {
+  return phrase
+    .replace(/^(?:i'?m|im|i am|an?|the)\s+/i, "")
+    .replace(/\s+(?:btw|though|tho|rn|right now|today)$/i, "")
+    .trim()
+    .replace(/["'`]+/g, "");
+}
+
+function isStableIdentityPhrase(phrase: string): boolean {
+  const normalized = phrase.toLowerCase();
+
+  if (!normalized || normalized.length < 3 || normalized.length > 80) {
+    return false;
+  }
+
+  if (EPHEMERAL_SELF_DESCRIPTIONS.has(normalized)) {
+    return false;
+  }
+
+  return /\b(engineer|developer|programmer|student|teacher|designer|artist|manager|founder|owner|doctor|nurse|lawyer|writer|researcher|analyst|consultant|admin|moderator|creator|musician|athlete|school|college|university)\b/i
+    .test(normalized);
+}
+
+export function inferredUserMemoryContents(content: string): string[] {
+  return identityPhraseCandidates(content)
+    .filter(isStableIdentityPhrase)
+    .map((phrase) => `User is a ${phrase}`);
+}
+
+export async function saveInferredUserMemories(
+  context: MemoryContext,
+  content: string,
+  createdBy = context.userId,
+): Promise<MemoryEntry[]> {
+  const candidates = inferredUserMemoryContents(content);
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const existing = new Set(
+    (await listMemories("user", context)).map((entry) =>
+      normalizeMemoryContent(entry.content)
+    ),
+  );
+  const saved: MemoryEntry[] = [];
+
+  for (const candidate of candidates) {
+    if (existing.has(normalizeMemoryContent(candidate))) {
+      continue;
+    }
+
+    const entry = await addMemory("user", context, candidate, createdBy);
+    existing.add(normalizeMemoryContent(candidate));
+    saved.push(entry);
+  }
+
+  return saved;
 }
 
 export async function removeMemory(

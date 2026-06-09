@@ -1,3 +1,5 @@
+import { readDataTextFile, writeDataTextFile } from "./dataDir.ts";
+
 type StoredModel = {
   model: string;
   updatedAt: string;
@@ -7,9 +9,8 @@ type ModelStore = {
   users: Record<string, StoredModel>;
 };
 
-const dataDir = new URL("../data/", import.meta.url);
-const storeFile = new URL("models.json", dataDir);
-const DEFAULT_MISTRAL_MODEL = "mistral-small-latest";
+const storeFile = "models.json";
+const DEFAULT_MODEL = "mistral-small-latest";
 export const MISTRAL_ROUTER_MODEL = "router";
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/;
 
@@ -21,7 +22,7 @@ async function loadStore(): Promise<ModelStore> {
   }
 
   try {
-    const raw = await Deno.readTextFile(storeFile);
+    const raw = await readDataTextFile(storeFile);
     const parsed = JSON.parse(raw) as Partial<ModelStore>;
     cachedStore = { users: parsed.users ?? {} };
   } catch (error) {
@@ -36,12 +37,12 @@ async function loadStore(): Promise<ModelStore> {
 }
 
 async function saveStore(store: ModelStore): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  await writeDataTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 export function defaultMistralModel(): string {
-  return Deno.env.get("MISTRAL_MODEL") ?? DEFAULT_MISTRAL_MODEL;
+  return Deno.env.get("MISSY_MODEL") ?? Deno.env.get("MISTRAL_MODEL") ??
+    DEFAULT_MODEL;
 }
 
 export function isRouterModel(model: string): boolean {

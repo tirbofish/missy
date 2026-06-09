@@ -1,5 +1,7 @@
 import { summarizeAssistantMediaContent } from "./media.ts";
 
+import { readDataTextFile, writeDataTextFile } from "./dataDir.ts";
+
 export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
@@ -21,8 +23,7 @@ type ContextStore = {
   conversations: Record<string, StoredConversation>;
 };
 
-const dataDir = new URL("../data/", import.meta.url);
-const storeFile = new URL("contexts.json", dataDir);
+const storeFile = "contexts.json";
 const MAX_CONTEXT_MESSAGES = 20;
 
 let cachedStore: ContextStore | undefined;
@@ -33,7 +34,7 @@ async function loadStore(): Promise<ContextStore> {
   }
 
   try {
-    const raw = await Deno.readTextFile(storeFile);
+    const raw = await readDataTextFile(storeFile);
     const parsed = JSON.parse(raw) as Partial<ContextStore>;
     cachedStore = { conversations: parsed.conversations ?? {} };
   } catch (error) {
@@ -48,8 +49,7 @@ async function loadStore(): Promise<ContextStore> {
 }
 
 async function saveStore(store: ContextStore): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
+  await writeDataTextFile(storeFile, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 function trimContext(messages: ConversationMessage[]): ConversationMessage[] {

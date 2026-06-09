@@ -23,8 +23,8 @@ export const SYSTEM_PROMPT_DENIAL_MESSAGE =
 
 export function buildHelpMessage(hasLocalAccess: boolean): string {
   const desktopHelp = hasLocalAccess
-    ? "\n- You can ask about any local path, including `D:\\`, in DMs or servers. Missy can stat, list, recursively find, read, copy, create folders, write text files, move/rename, delete, upload selected local files into Discord, and use a Deno REPL for compound file tasks.\n- The Deno REPL starts without local permissions and sends each requested read/write/run/net/env permission to chat for approval before rerunning with that scoped permission. Local file uploads also ask for read approval first."
-    : "\n- Desktop, local computer, and filesystem tools are disabled for your Discord user or roles.";
+    ? "\n- You can use the embedded Deno REPL for local tasks from DMs or servers. It starts without local permissions and sends each requested read/write/run/net/env permission to chat for approval before rerunning with that scoped permission. Local file uploads also ask for read approval first."
+    : "\n- The embedded Deno REPL and local file uploads are disabled for your Discord user or roles.";
 
   return [
     "Missy commands:",
@@ -35,8 +35,9 @@ export function buildHelpMessage(hasLocalAccess: boolean): string {
     "- `/memory`: list or manage persistent user, server, and user+server memories with buttons, modals, delete menus, and id autocomplete.",
     "- Context menu `Missy: remember message` or `Missy: remember user`: save memories from Discord right-click menus.",
     "- `/automation`: list or manage server-wide or channel-scoped automations with buttons, edit modals, id autocomplete, and an add modal; editing requires Manage Server permission.",
+    "- In normal chat, Missy can create daily scheduled tasks when you ask her to message, DM, notify, or run a lookup at a time.",
     "- `/set-api-key api-key:<key>`: save a server key in servers, or your personal key in DMs.",
-    "- `/model`: view or change your Mistral model, including `router` mode.",
+    "- `/model`: view or change your model, including `router` mode.",
     "- `/status`: check Mistral models available to the saved API key.",
     "- `/api-key-status`: check whether this server or DM has a saved key.",
     "- `/remove-api-key`: remove this server's key in servers, or your personal key in DMs.",
@@ -44,7 +45,9 @@ export function buildHelpMessage(hasLocalAccess: boolean): string {
     "- `/mcp-add`: admin-only MCP server configuration.",
     "- `/shutdown`: stop Missy, restricted to configured shutdown users.",
     "- In servers, mention Missy, reply to Missy, or use `!M!<message>`.",
-    "- Missy can use Brave Search for current web, image, video, and news lookups when `BRAVE_SEARCH_API_KEY` is set.",
+    "- In servers, Missy can inspect members, roles, channels, and server info when a request needs server context.",
+    "- Missy can use the configured search provider for current web, image, video, and news lookups.",
+    "- Missy can save reusable self-authored skills for repeatable workflows and public API patterns.",
     "- Missy may react to a message or intentionally send no text reply when that is the better response.",
     desktopHelp,
   ].join("\n");

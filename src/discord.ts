@@ -13,7 +13,10 @@ import {
   resolveLocalPath,
 } from "./filesystemTools.ts";
 import { searchGiphyGif } from "./giphy.ts";
-import { type MistralToolActivity, splitDiscordMessages } from "./mistral.ts";
+import {
+  type MistralToolActivity,
+  splitDiscordMessages,
+} from "./mistral/mod.ts";
 import { actorFromInteraction, actorFromMessage } from "./discordActor.ts";
 import { canAccessLocalComputer } from "./localAccess.ts";
 
@@ -193,9 +196,6 @@ export function agentToolActivityContent(
   activity: MistralToolActivity,
 ): string {
   const args = parseToolArguments(activity.arguments);
-  const pathArg = compactValue(args.path);
-  const sourcePath = compactValue(args.sourcePath);
-  const destinationPath = compactValue(args.destinationPath);
 
   switch (activity.toolName) {
     case FILESYSTEM_TOOL_NAMES.denoRepl: {
@@ -204,42 +204,6 @@ export function agentToolActivityContent(
         ? `running a local Deno check: ${inlineCode(code)}`
         : "running a local Deno check.";
     }
-    case FILESYSTEM_TOOL_NAMES.list:
-      return pathArg
-        ? `checking the folder ${inlineCode(pathArg)}`
-        : "checking a local folder.";
-    case FILESYSTEM_TOOL_NAMES.find:
-      return pathArg
-        ? `searching local files in ${inlineCode(pathArg)}`
-        : "searching local files.";
-    case FILESYSTEM_TOOL_NAMES.stat:
-      return pathArg
-        ? `inspecting ${inlineCode(pathArg)}`
-        : "inspecting a local path.";
-    case FILESYSTEM_TOOL_NAMES.read:
-      return pathArg
-        ? `reading ${inlineCode(pathArg)}`
-        : "reading a local file.";
-    case FILESYSTEM_TOOL_NAMES.copy:
-      return sourcePath && destinationPath
-        ? `copying ${inlineCode(sourcePath)} to ${inlineCode(destinationPath)}`
-        : "copying a local path.";
-    case FILESYSTEM_TOOL_NAMES.move:
-      return sourcePath && destinationPath
-        ? `moving ${inlineCode(sourcePath)} to ${inlineCode(destinationPath)}`
-        : "moving a local path.";
-    case FILESYSTEM_TOOL_NAMES.mkdir:
-      return pathArg
-        ? `creating ${inlineCode(pathArg)}`
-        : "creating a local folder.";
-    case FILESYSTEM_TOOL_NAMES.writeText:
-      return pathArg
-        ? `writing ${inlineCode(pathArg)}`
-        : "writing a local file.";
-    case FILESYSTEM_TOOL_NAMES.delete:
-      return pathArg
-        ? `deleting ${inlineCode(pathArg)}`
-        : "deleting a local path.";
     default:
       return `using ${inlineCode(activity.toolName)}.`;
   }
@@ -410,50 +374,6 @@ function buildOperationApprovalMessage(
     ].join("\n");
   }
 
-  if (request.action === "copy") {
-    return [
-      "Approve copying this local path?",
-      "",
-      `From: \`${formatPath(request.sourcePath ?? "")}\``,
-      `To: \`${formatPath(request.destinationPath ?? "")}\``,
-    ].join("\n");
-  }
-
-  if (request.action === "move") {
-    return [
-      `Approve moving this ${request.subject}?`,
-      "",
-      `From: \`${formatPath(request.sourcePath ?? "")}\``,
-      `To: \`${formatPath(request.destinationPath ?? "")}\``,
-    ].join("\n");
-  }
-
-  if (request.action === "delete") {
-    return [
-      `Approve deleting this ${request.subject}?`,
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-      "",
-      "This cannot be undone by Missy.",
-    ].join("\n");
-  }
-
-  if (request.action === "find") {
-    return [
-      "Approve recursively searching this local folder?",
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-    ].join("\n");
-  }
-
-  if (request.action === "list") {
-    return [
-      "Approve listing this local folder?",
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-    ].join("\n");
-  }
-
   if (request.action === "read") {
     return [
       "Approve reading this local file?",
@@ -462,32 +382,8 @@ function buildOperationApprovalMessage(
     ].join("\n");
   }
 
-  if (request.action === "stat") {
-    return [
-      "Approve inspecting this local path?",
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-    ].join("\n");
-  }
-
-  if (request.action === "mkdir") {
-    return [
-      "Approve creating this local folder?",
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-    ].join("\n");
-  }
-
-  if (request.action === "write") {
-    return [
-      "Approve writing this local file?",
-      "",
-      `Path: \`${formatPath(request.targetPath ?? "")}\``,
-    ].join("\n");
-  }
-
   return [
-    `Approve overwriting this ${request.subject}?`,
+    `Approve this local ${request.subject} request?`,
     "",
     `Path: \`${formatPath(request.targetPath ?? "")}\``,
   ].join("\n");
@@ -508,11 +404,9 @@ function logFilesystemAccess(
     at: new Date().toISOString(),
     channelId: actor.channelId,
     code: request.code,
-    destinationPath: request.destinationPath,
     event: `filesystem_${event}`,
     guildId: actor.guildId,
     permission: request.permission,
-    sourcePath: request.sourcePath,
     subject: request.subject,
     targetPath: request.targetPath,
     userId: actor.userId,
