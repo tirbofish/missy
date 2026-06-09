@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  ChannelType,
   type ChatInputCommandInteraction,
   Client,
   Events,
@@ -288,6 +289,7 @@ class DiscordPlatform implements AgentPlatform {
       id: message.id,
       platform: this.name,
       channelId: message.channelId,
+      channelType: resolveChannelType(message.channel.type),
       guildId: message.guildId ?? undefined,
       authorId: message.author.id,
       authorName: message.author.username,
@@ -295,9 +297,11 @@ class DiscordPlatform implements AgentPlatform {
       context,
       replyTo: await this.#buildReplyReference(message),
       reply: async (content) => {
-        await replyToMessage(
+        await replyMultiMessage(
           message,
           content,
+          this.#context?.config.discord.multiMessageDelimiter ?? "|||",
+          this.#context?.config.discord.multiMessageDelayMs ?? 1500,
           this.#context?.config.discord.maxMessageLength,
         );
       },
@@ -350,14 +354,17 @@ class DiscordPlatform implements AgentPlatform {
       id: interaction.id,
       platform: this.name,
       channelId: interaction.channelId,
+      channelType: interaction.channel ? resolveChannelType(interaction.channel.type) : undefined,
       guildId: interaction.guildId ?? undefined,
       authorId: interaction.user.id,
       authorName: interaction.user.username,
       content,
       reply: async (replyContent) => {
-        await followUpInteraction(
+        await followUpMultiMessage(
           interaction,
           replyContent,
+          this.#context?.config.discord.multiMessageDelimiter ?? "|||",
+          this.#context?.config.discord.multiMessageDelayMs ?? 1500,
           this.#context?.config.discord.maxMessageLength,
         );
       },
@@ -687,6 +694,7 @@ class DiscordPlatform implements AgentPlatform {
       id: `${message.id}:${fullReaction.emoji.identifier}:${fullUser.id}`,
       platform: this.name,
       channelId: message.channelId,
+      channelType: message.channel ? resolveChannelType(message.channel.type) : undefined,
       guildId: message.guildId ?? undefined,
       authorId: fullUser.id,
       authorName: fullUser.username,
@@ -713,6 +721,37 @@ class DiscordPlatform implements AgentPlatform {
     };
 
     await this.#context.handleMessage(inbound);
+  }
+}
+
+function resolveChannelType(type: ChannelType): string {
+  switch (type) {
+    case ChannelType.GuildText:
+      return "text";
+    case ChannelType.DM:
+      return "dm";
+    case ChannelType.GuildVoice:
+      return "voice";
+    case ChannelType.GroupDM:
+      return "group-dm";
+    case ChannelType.GuildCategory:
+      return "category";
+    case ChannelType.GuildAnnouncement:
+      return "announcement";
+    case ChannelType.AnnouncementThread:
+      return "announcement-thread";
+    case ChannelType.PublicThread:
+      return "thread";
+    case ChannelType.PrivateThread:
+      return "private-thread";
+    case ChannelType.GuildStageVoice:
+      return "stage";
+    case ChannelType.GuildForum:
+      return "forum";
+    case ChannelType.GuildMedia:
+      return "media";
+    default:
+      return "unknown";
   }
 }
 
@@ -802,6 +841,89 @@ async function followUpInteraction(
   for (const chunk of chunks.slice(1)) {
     await interaction.followUp(chunk);
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Split content by the multi-message delimiter, then send each part as a
+ * separate message with typing indicators and a delay between them.
+ */
+async function replyMultiMessage(
+  message: Message,
+  content: string,
+  delimiter: string,
+  delayMs: number,
+  maxLength = 0,
+): Promise<void> {
+  const parts = splitByDelimiter(content, delimiter);
+
+  if (parts.length <= 1) {
+    await replyToMessage(message, content, maxLength);
+    return;
+  }
+
+  // First part is sent as a reply
+  await replyToMessage(message, parts[0], maxLength);
+
+  // Subsequent parts are sent as separate channel messages with a delay
+  for (const part of parts.slice(1)) {
+    if ("sendTyping" in message.channel) {
+      await message.channel.sendTyping().catch(() => {});
+    }
+    await delay(delayMs);
+    const effectiveMax = maxLength > 0 ? maxLength : 2000;
+    const chunks = splitDiscordMessage(part, effectiveMax);
+    for (const chunk of chunks) {
+      if ("send" in message.channel) {
+        await message.channel.send(chunk);
+      } else {
+        await message.reply(chunk);
+      }
+    }
+  }
+}
+
+/**
+ * Split content by the multi-message delimiter, then send each part as a
+ * separate follow-up with typing delays between them.
+ */
+async function followUpMultiMessage(
+  interaction: ChatInputCommandInteraction,
+  content: string,
+  delimiter: string,
+  delayMs: number,
+  maxLength = 0,
+): Promise<void> {
+  const parts = splitByDelimiter(content, delimiter);
+
+  if (parts.length <= 1) {
+    await followUpInteraction(interaction, content, maxLength);
+    return;
+  }
+
+  // First part edits the deferred reply
+  await followUpInteraction(interaction, parts[0], maxLength);
+
+  // Subsequent parts are follow-ups with delays
+  for (const part of parts.slice(1)) {
+    await delay(delayMs);
+    const effectiveMax = maxLength > 0 ? maxLength : 2000;
+    const chunks = splitDiscordMessage(part, effectiveMax);
+    for (const chunk of chunks) {
+      await interaction.followUp(chunk);
+    }
+  }
+}
+
+/** Split content by delimiter, trimming each part and dropping empties. */
+function splitByDelimiter(content: string, delimiter: string): string[] {
+  return content
+    .split(delimiter)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 const module: PlatformModule = {

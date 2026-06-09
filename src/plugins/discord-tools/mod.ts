@@ -314,6 +314,42 @@ const module: PluginModule = {
         return { success: true };
       },
     });
+
+    // ─── discord.fetch_history ─────────────────────────────────────────────────
+    context.tools.register({
+      name: "discord.fetch_history",
+      description:
+        "Fetch more message history from the current channel. Use this when you need more context about what was said earlier in the conversation.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: {
+            type: "number",
+            description:
+              "Number of messages to fetch (1-100, default 25).",
+          },
+          before: {
+            type: "string",
+            description:
+              "Fetch messages before this message ID. Omit to get messages before the current message.",
+          },
+        },
+      },
+      async execute(input, executionContext) {
+        if (input !== null && input !== undefined && !isRecord(input)) {
+          throw new Error("Invalid input");
+        }
+        const opts = (input ?? {}) as { limit?: number; before?: string };
+        const channelId = executionContext.message.channelId;
+        const before = opts.before ?? executionContext.message.id;
+        const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+        const messages = await discord.searchMessages(channelId, {
+          limit,
+          before,
+        });
+        return messages;
+      },
+    });
   },
 };
 

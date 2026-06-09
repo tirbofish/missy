@@ -108,6 +108,7 @@ export interface InboundMessage {
   id: string;
   platform: string;
   channelId: string;
+  channelType?: string;
   guildId?: string;
   authorId: string;
   authorName?: string;

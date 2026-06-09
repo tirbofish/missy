@@ -46,6 +46,8 @@ export interface DiscordConfig {
   reactToAllMessages: boolean;
   reactToHandledMessages: boolean;
   handledReactionEmoji: string;
+  multiMessageDelimiter: string;
+  multiMessageDelayMs: number;
 }
 
 export interface WebSearchConfig {
@@ -150,6 +152,8 @@ export function loadConfig(env = Deno.env.toObject()): AppConfig {
       reactToAllMessages: bool("discord.reactToAllMessages", "DISCORD_REACT_TO_ALL_MESSAGES", false),
       reactToHandledMessages: bool("discord.reactToHandledMessages", "DISCORD_REACT_TO_HANDLED_MESSAGES", false),
       handledReactionEmoji: str("discord.handledReactionEmoji", "DISCORD_HANDLED_REACTION_EMOJI", "\u{1F440}"),
+      multiMessageDelimiter: str("discord.multiMessageDelimiter", "DISCORD_MULTI_MESSAGE_DELIMITER", "|||"),
+      multiMessageDelayMs: num("discord.multiMessageDelayMs", "DISCORD_MULTI_MESSAGE_DELAY_MS", 1500),
     },
     webSearch: {
       providersDir: str("webSearch.providersDir", "WEB_SEARCH_PROVIDERS_DIR", "src/web-search-providers"),

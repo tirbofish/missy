@@ -38,6 +38,11 @@ export function buildSystemInstructions(options: {
     "Use JSON inside each <input> element.",
     "IMPORTANT: If you are calling tools, leave <message> EMPTY. Do not guess or pre-fill an answer. You will see the tool results and respond in a follow-up turn.",
     "</output_contract>",
+    "<multi_message>",
+    "You can split your response into multiple separate messages (sent as individual chat bubbles with a short delay between them) by using multiple <message> elements.",
+    "Example: <agent><respond>true</respond><message>Hey!</message><message>How's it going?</message><message>I was thinking about that thing you mentioned earlier...</message><memory_updates></memory_updates><tool_calls></tool_calls></agent>",
+    "This makes your responses feel more natural and conversational, like a real person typing multiple messages. Use this when it feels natural — greetings, quick thoughts, or when you want to emphasize separate points. Don't overuse it.",
+    "</multi_message>",
     "<available_tools>",
     ...options.tools.map(formatToolXml),
     "</available_tools>",
@@ -56,6 +61,7 @@ export function buildConversationInput(
     "<incoming_message>",
     `<platform>${escapeXml(message.platform)}</platform>`,
     `<channel_id>${escapeXml(message.channelId)}</channel_id>`,
+    message.channelType ? `<channel_type>${escapeXml(message.channelType)}</channel_type>` : "",
     message.guildId ? `<guild_id>${escapeXml(message.guildId)}</guild_id>` : "",
     `<author id="${escapeXml(message.authorId)}">${
       escapeXml(message.authorName ?? message.authorId)
@@ -92,7 +98,10 @@ export function parseAgentOutputXml(xml: string): AgentOutput {
     throw new Error("AI XML output must contain an <agent> root element.");
   }
 
-  const message = decodeXml(matchTag(root, "message") ?? "").trim();
+  const message = matchAllTags(root, "message")
+    .map((m) => decodeXml(m).trim())
+    .filter((m) => m.length > 0)
+    .join("|||") || "";
   const memoryUpdates = parseMemoryUpdates(root);
   const respond = parseRespond(root);
   const toolCalls = [
@@ -267,6 +276,16 @@ function matchTag(xml: string, tagName: string): string | undefined {
   const match = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`)
     .exec(xml);
   return match?.[1];
+}
+
+function matchAllTags(xml: string, tagName: string): string[] {
+  const regex = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, "g");
+  const results: string[] = [];
+  let match;
+  while ((match = regex.exec(xml)) !== null) {
+    results.push(match[1]);
+  }
+  return results;
 }
 
 function matchAttribute(
