@@ -1,20 +1,17 @@
 {
+  "nodeModulesDir": "auto",
   "tasks": {
-    "dev": "deno run -E -R --allow-write --allow-run -N --env-file=.env --watch src/main.ts",
-    "check": "deno check --allow-import src/main.ts src/commands/missy.ts src/apiTools_test.ts src/automations_test.ts src/braveSearch_test.ts src/contextIntent_test.ts src/currentLookup_test.ts src/dataDir_test.ts src/discordServerTools_test.ts src/discord_test.ts src/filesystemTools_test.ts src/giphy_test.ts src/media_test.ts src/memories_test.ts src/messageContent_test.ts src/mistralStatus_test.ts src/mistral_test.ts src/modelProviders_test.ts src/permissions_test.ts src/reactions_test.ts src/scheduledTasks_test.ts src/searchProviders_test.ts src/selfSkills_test.ts src/skills_test.ts scripts/commands.ts scripts/oauth-setup.ts scripts/reset-data.ts",
-    "data:reset": "deno run --allow-env --allow-read --allow-write scripts/reset-data.ts",
-    "commands:clear-global": "deno run -E -N --env-file=.env scripts/commands.ts clear-global",
-    "commands:clear-guilds": "deno run -E -N --env-file=.env scripts/commands.ts clear-guilds",
-    "commands:clear-all": "deno run -E -N --env-file=.env scripts/commands.ts clear-all"
-  },
-  "compilerOptions": {
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true
+    "setup": "node bin/dev.js interactive",
+    "dev": "deno run --watch --allow-env --allow-read --allow-write --allow-net bootstrap.ts start",
+    "start": "deno run --allow-env --allow-read --allow-write --allow-net bootstrap.ts start",
+    "check": "deno check bootstrap.ts src/main.ts src/core/memory_test.ts src/core/module-loader_test.ts src/core/xml_test.ts src/platforms/discord_test.ts src/plugins/echo/mod.ts src/plugins/time/mod.ts src/plugins/weather/mod.ts src/plugins/web-search/mod.ts src/platforms/discord/mod.ts src/providers/openai/mod.ts src/providers/mistral/mod.ts src/web-search-providers/duckduckgo/mod.ts src/web-search-providers/brave/mod.ts",
+    "fmt": "deno fmt",
+    "test": "deno test --allow-read"
   },
   "imports": {
-    "@discordx/importer": "npm:@discordx/importer@^1.3.3",
+    "@mistralai/mistralai": "npm:@mistralai/mistralai@^2.2.0",
+    "@openai/openai": "jsr:@openai/openai",
     "@std/assert": "jsr:@std/assert@1",
-    "discord.js": "npm:discord.js@^14.26.4",
-    "discordx": "npm:discordx@^11.13.3"
+    "discord.js": "npm:discord.js@^14.22.1"
   }
 }
