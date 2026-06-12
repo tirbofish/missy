@@ -11,6 +11,7 @@ loaded modules.
   OpenAI-compatible providers.
 - `src/providers/mistral`: Mistral TypeScript SDK provider.
 - `src/platforms/discord`: Discord platform adapter using `discord.js`.
+- `src/platforms/matrix`: Matrix platform adapter using `matrix-js-sdk`.
 - `src/plugins/*`: plug-n-play tool plugins. Each plugin lives in its own folder
   with a `mod.ts`.
 - `src/web-search-providers/*`: plug-n-play providers used by the `web.search`
@@ -71,18 +72,80 @@ Optional reaction settings:
 - `DISCORD_INCLUDE_REPLY_CONTEXT=true` includes the replied-to message in the
   core input.
 
+## Matrix
+
+The Matrix platform lets you talk to Missy through any Matrix client:
+
+- Direct rooms: messages are handled without a mention or prefix.
+- Group rooms: Missy responds when mentioned, when `!M!` is used, or when the
+  message replies to one of Missy's messages.
+- Commands: `!M! help`, `!M! status`, `!M! memory`, `!M! plugins`,
+  `!M! tools`, or `!M! <message>`.
+
+Enable Matrix instead of Discord:
+
+```env
+PLATFORMS=matrix
+MATRIX_HOMESERVER_URL=https://matrix.org
+MATRIX_ACCESS_TOKEN=your-bot-access-token
+MATRIX_USER_ID=@missy:matrix.org
+```
+
+Optional settings:
+
+- `MATRIX_ROOM_IDS=!room:server,#alias:server` joins those rooms on startup.
+- `MATRIX_COMMAND_PREFIX=!M!` changes the command prefix.
+- `MATRIX_DISPLAY_NAME=Missy` controls fallback plain-text mention detection.
+- `MATRIX_RESPOND_TO_ALL_MESSAGES=true` lets Missy see every group-room
+  message.
+- `MATRIX_INCLUDE_REPLY_CONTEXT=true` includes replied-to messages when they are
+  still in the live timeline.
+- `MATRIX_MAX_MESSAGE_LENGTH=4000` controls reply splitting.
+- `MATRIX_AUTO_JOIN_INVITES=true` joins rooms when the bot account is invited.
+
 ## Adding a Plugin
 
-Create a folder under `src/plugins`:
+Create a package folder under `src/plugins`:
 
 ```text
+src/plugins/my-plugin/bootstrap.ts
+src/plugins/my-plugin/package.json
+src/plugins/my-plugin/src/mod.ts
 src/plugins/my-plugin/mod.ts
 ```
 
-Export a default `PluginModule`:
+Every package outside `src/core` owns a `bootstrap.ts` and `src/` folder. The
+root bootstrap discovers those child bootstraps and gathers config fields, env
+variables, CLI flags, and package entrypoints from them.
+
+For plugins, `bootstrap.ts` also receives plugin management services, including
+a plugin-scoped `keystore` and shared `globalKeystore`, then returns the plugin
+module:
 
 ```ts
-import type { PluginModule } from "../../core/types.ts";
+import type { PackageBootstrapModule } from "../../core/types.ts";
+import plugin from "./mod.ts";
+
+const bootstrap: PackageBootstrapModule = {
+  metadata: plugin.metadata,
+  kind: "plugin",
+  modulePath: "src/mod.ts",
+  configSchema: plugin.configSchema,
+  async bootstrap(context) {
+    const previous = context.keystore.get("lastStart");
+    await context.keystore.set("lastStart", new Date().toISOString());
+    return plugin;
+  },
+};
+
+export default bootstrap;
+```
+
+Export the actual `PluginModule` from `src/mod.ts`; `mod.ts` can remain as a
+compatibility re-export while packages are being migrated:
+
+```ts
+import type { PluginModule } from "../../../core/types.ts";
 
 const module: PluginModule = {
   metadata: {
@@ -106,12 +169,16 @@ export default module;
 ```
 
 The core discovers plugin folders at startup from `PLUGINS_DIR`.
+Plugin bootstrap state is saved through `KEYSTORE_PATH`, which defaults to
+`data/keystore.json`.
 
 ## Adding an AI Provider
 
-Create a folder under `src/providers` with a `mod.ts` that exports a
-`ProviderModule`. Add it to `AI_PROVIDERS`, and set `AI_PROVIDER` to the default
-provider Missy should use for normal model calls.
+Create a package folder under `src/providers` with `bootstrap.ts`,
+`package.json`, and `src/mod.ts`. The package bootstrap declares its
+`ConfigSchema`, env variables, and module entrypoint. Add it to `AI_PROVIDERS`,
+and set `AI_PROVIDER` to the default provider Missy should use for normal model
+calls.
 
 The built-in `openai` provider uses the official OpenAI SDK and supports
 `OPENAI_BASE_URL` for OpenAI-compatible services.

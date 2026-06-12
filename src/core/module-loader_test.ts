@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import { loadConfig } from "./config.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { discoverPlugins, discoverProvider } from "./module-loader.ts";
+import { FileKeystore } from "./keystore.ts";
 import { createLogger } from "./logger.ts";
 import { PlatformServiceRegistry } from "./platform-service-registry.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
@@ -10,7 +11,14 @@ import type { AgentContext } from "./types.ts";
 
 Deno.test("discoverPlugins loads plugin folders dynamically", async () => {
   const tools = new ToolRegistry();
-  const plugins = await discoverPlugins("src/plugins", createLogger("test"));
+  const keystore = new FileKeystore("data/test-keystore.json", false);
+  await keystore.load();
+  const plugins = await discoverPlugins(
+    "src/plugins",
+    createLogger("test"),
+    keystore,
+    ["echo", "time", "weather", "web-search"],
+  );
   const providers = new ProviderRegistry("openai");
   const memory = new MemoryStore("data/test-memory.json", false);
 
@@ -26,6 +34,7 @@ Deno.test("discoverPlugins loads plugin folders dynamically", async () => {
       DISCORD_TOKEN: "test",
     }),
     handleMessage: () => Promise.resolve(),
+    keystore,
     logger: createLogger("test"),
     memory,
     personality: { xml: "<personality></personality>" },

@@ -22,12 +22,22 @@ export interface ConfigField {
   secret?: boolean;
   default?: string | number | boolean;
   options?: string[];
+  env?: string;
+  flag?: string;
+  aliases?: string[];
 }
 
 export interface ConfigSchema {
   module: string;
   label: string;
   fields: ConfigField[];
+}
+
+export interface PackageBootstrap {
+  metadata?: { name: string; description: string; version: string };
+  kind?: string;
+  modulePath?: string;
+  configSchema?: ConfigSchema;
 }
 
 export function scanModules(dir: string): string[] {
@@ -37,10 +47,15 @@ export function scanModules(dir: string): string[] {
     for (const entry of entries) {
       if (entry.isDirectory()) {
         try {
-          statSync(join(dir, entry.name, "mod.ts"));
+          statSync(join(dir, entry.name, "bootstrap.ts"));
           modules.push(entry.name);
         } catch {
-          // no mod.ts, skip
+          try {
+            statSync(join(dir, entry.name, "mod.ts"));
+            modules.push(entry.name);
+          } catch {
+            // no bootstrap.ts or mod.ts, skip
+          }
         }
       }
     }
@@ -54,12 +69,28 @@ export function scanModules(dir: string): string[] {
  * Dynamically import a module and extract its configSchema (if any).
  */
 export async function loadModuleSchema(dir: string, name: string): Promise<ConfigSchema | null> {
+  const bootstrapPath = resolve(dir, name, "bootstrap.ts");
+  const bootstrap = await loadPackageBootstrap(bootstrapPath);
+  if (bootstrap?.configSchema) {
+    return bootstrap.configSchema;
+  }
+
   const modPath = resolve(dir, name, "mod.ts");
   try {
     const moduleUrl = pathToFileURL(modPath).href;
     const mod = await import(moduleUrl);
     const exported = mod.default ?? mod;
     return exported.configSchema ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadPackageBootstrap(path: string): Promise<PackageBootstrap | null> {
+  try {
+    const moduleUrl = pathToFileURL(path).href;
+    const mod = await import(moduleUrl);
+    return (mod.default ?? mod) as PackageBootstrap;
   } catch {
     return null;
   }

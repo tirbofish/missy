@@ -211,6 +211,7 @@ export default class Interactive extends Command {
 
     // Determine which schemas to prompt for vs carry over
     const schemasToPrompt = allSchemas.filter((schema) => {
+      if (editModules) return true;
       if (editAll) return true;
       if (editProviderConfig && providerSchemas.includes(schema)) return true;
       if (editPlatformConfig && platformSchemas.includes(schema)) return true;
@@ -242,15 +243,6 @@ export default class Interactive extends Command {
       this.log(`\n${chalk.cyan.bold(`── ${schema.label} ──`)}`);
 
       for (const field of schema.fields) {
-        if (field.hidden) {
-          const existingValue = getNestedValue(existing, field.key);
-          if (existingValue !== undefined) {
-            setNestedValue(config, field.key, existingValue);
-          } else if (field.default !== undefined) {
-            setNestedValue(config, field.key, field.default);
-          }
-          continue;
-        }
         const existingValue = getNestedValue(existing, field.key);
         const value = await this.promptField(field, existingValue);
         if (value !== undefined && value !== "") {

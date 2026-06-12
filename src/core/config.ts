@@ -4,13 +4,16 @@ export interface AppConfig {
   providerNames: string[];
   personalityPath: string;
   platformsDir: string;
+  pluginNames: string[];
   pluginsDir: string;
   providersDir: string;
   replyMode: "message" | "xml";
+  keystore: KeystoreConfig;
   memory: MemoryConfig;
   openai: OpenAIProviderConfig;
   mistral: MistralProviderConfig;
   discord: DiscordConfig;
+  matrix: MatrixConfig;
   webSearch: WebSearchConfig;
 }
 
@@ -33,6 +36,11 @@ export interface MemoryConfig {
   enabled: boolean;
 }
 
+export interface KeystoreConfig {
+  path: string;
+  enabled: boolean;
+}
+
 export interface DiscordConfig {
   token?: string;
   mentionOnly: boolean;
@@ -48,6 +56,25 @@ export interface DiscordConfig {
   handledReactionEmoji: string;
   multiMessageDelimiter: string;
   multiMessageDelayMs: number;
+}
+
+export interface MatrixConfig {
+  homeserverUrl?: string;
+  accessToken?: string;
+  userId?: string;
+  deviceId?: string;
+  roomIds: string[];
+  mentionOnly: boolean;
+  commandPrefix: string;
+  displayName: string;
+  maxMessageLength: number;
+  respondToAllMessages: boolean;
+  includeReplyContext: boolean;
+  includeChannelContext: boolean;
+  channelContextCount: number;
+  multiMessageDelimiter: string;
+  multiMessageDelayMs: number;
+  autoJoinInvites: boolean;
 }
 
 export interface WebSearchConfig {
@@ -109,6 +136,7 @@ export function loadConfig(env = Deno.env.toObject()): AppConfig {
   const list = (filePath: string, envKey: string, fallback: string): string[] => {
     const v = getConfigValue(file, filePath);
     if (Array.isArray(v)) return v as string[];
+    if (typeof v === "string") return listFromEnv(v);
     return listFromEnv(env[envKey] ?? fallback);
   };
 
@@ -120,9 +148,14 @@ export function loadConfig(env = Deno.env.toObject()): AppConfig {
     providerNames: list("providers", "AI_PROVIDERS", defaultProviderName),
     personalityPath: str("personalityPath", "PERSONALITY_PATH", "personality.xml"),
     platformsDir: str("platformsDir", "PLATFORMS_DIR", "src/platforms"),
+    pluginNames: list("plugins", "PLUGINS", ""),
     pluginsDir: str("pluginsDir", "PLUGINS_DIR", "src/plugins"),
     providersDir: str("providersDir", "PROVIDERS_DIR", "src/providers"),
     replyMode: parseReplyMode(str("replyMode", "AGENT_REPLY_MODE", "xml")),
+    keystore: {
+      path: str("keystore.path", "KEYSTORE_PATH", "data/keystore.json"),
+      enabled: bool("keystore.enabled", "KEYSTORE_ENABLED", true),
+    },
     memory: {
       path: str("memory.path", "MEMORY_PATH", "data/memory.json"),
       enabled: bool("memory.enabled", "MEMORY_ENABLED", true),
@@ -154,6 +187,24 @@ export function loadConfig(env = Deno.env.toObject()): AppConfig {
       handledReactionEmoji: str("discord.handledReactionEmoji", "DISCORD_HANDLED_REACTION_EMOJI", "\u{1F440}"),
       multiMessageDelimiter: str("discord.multiMessageDelimiter", "DISCORD_MULTI_MESSAGE_DELIMITER", "|||"),
       multiMessageDelayMs: num("discord.multiMessageDelayMs", "DISCORD_MULTI_MESSAGE_DELAY_MS", 1500),
+    },
+    matrix: {
+      homeserverUrl: optStr("matrix.homeserverUrl", "MATRIX_HOMESERVER_URL"),
+      accessToken: optStr("matrix.accessToken", "MATRIX_ACCESS_TOKEN"),
+      userId: optStr("matrix.userId", "MATRIX_USER_ID"),
+      deviceId: optStr("matrix.deviceId", "MATRIX_DEVICE_ID"),
+      roomIds: list("matrix.roomIds", "MATRIX_ROOM_IDS", ""),
+      mentionOnly: bool("matrix.mentionOnly", "MATRIX_MENTION_ONLY", true),
+      commandPrefix: str("matrix.commandPrefix", "MATRIX_COMMAND_PREFIX", "!M!"),
+      displayName: str("matrix.displayName", "MATRIX_DISPLAY_NAME", "Missy"),
+      maxMessageLength: num("matrix.maxMessageLength", "MATRIX_MAX_MESSAGE_LENGTH", 0),
+      respondToAllMessages: bool("matrix.respondToAllMessages", "MATRIX_RESPOND_TO_ALL_MESSAGES", false),
+      includeReplyContext: bool("matrix.includeReplyContext", "MATRIX_INCLUDE_REPLY_CONTEXT", true),
+      includeChannelContext: bool("matrix.includeChannelContext", "MATRIX_INCLUDE_CHANNEL_CONTEXT", true),
+      channelContextCount: num("matrix.channelContextCount", "MATRIX_CHANNEL_CONTEXT_COUNT", 10),
+      multiMessageDelimiter: str("matrix.multiMessageDelimiter", "MATRIX_MULTI_MESSAGE_DELIMITER", "|||"),
+      multiMessageDelayMs: num("matrix.multiMessageDelayMs", "MATRIX_MULTI_MESSAGE_DELAY_MS", 1500),
+      autoJoinInvites: bool("matrix.autoJoinInvites", "MATRIX_AUTO_JOIN_INVITES", true),
     },
     webSearch: {
       providersDir: str("webSearch.providersDir", "WEB_SEARCH_PROVIDERS_DIR", "src/web-search-providers"),

@@ -4,7 +4,7 @@
     "setup": "node bin/dev.js interactive",
     "dev": "deno run --watch --allow-env --allow-read --allow-write --allow-net bootstrap.ts start",
     "start": "deno run --allow-env --allow-read --allow-write --allow-net bootstrap.ts start",
-    "check": "deno check bootstrap.ts src/main.ts src/core/memory_test.ts src/core/module-loader_test.ts src/core/xml_test.ts src/platforms/discord_test.ts src/plugins/echo/mod.ts src/plugins/time/mod.ts src/plugins/weather/mod.ts src/plugins/web-search/mod.ts src/platforms/discord/mod.ts src/providers/openai/mod.ts src/providers/mistral/mod.ts src/web-search-providers/duckduckgo/mod.ts src/web-search-providers/brave/mod.ts",
+    "check": "deno check bootstrap.ts src/core/app.ts src/core/keystore.ts src/core/memory_test.ts src/core/module-loader_test.ts src/core/xml_test.ts src/platforms/discord_test.ts src/providers/openai/bootstrap.ts src/providers/mistral/bootstrap.ts src/platforms/discord/bootstrap.ts src/platforms/matrix/bootstrap.ts src/plugins/discord-tools/bootstrap.ts src/plugins/echo/bootstrap.ts src/plugins/time/bootstrap.ts src/plugins/weather/bootstrap.ts src/plugins/web-search/bootstrap.ts src/web-search-providers/duckduckgo/bootstrap.ts src/web-search-providers/brave/bootstrap.ts src/commands/bootstrap.ts src/platforms/discord/src/mod.ts src/platforms/matrix/src/mod.ts src/providers/openai/src/mod.ts src/providers/mistral/src/mod.ts src/web-search-providers/duckduckgo/src/mod.ts src/web-search-providers/brave/src/mod.ts",
     "fmt": "deno fmt",
     "test": "deno test --allow-read"
   },
@@ -12,6 +12,7 @@
     "@mistralai/mistralai": "npm:@mistralai/mistralai@^2.2.0",
     "@openai/openai": "jsr:@openai/openai",
     "@std/assert": "jsr:@std/assert@1",
-    "discord.js": "npm:discord.js@^14.22.1"
+    "discord.js": "npm:discord.js@^14.22.1",
+    "matrix-js-sdk": "npm:matrix-js-sdk@^41.7.0"
   }
 }

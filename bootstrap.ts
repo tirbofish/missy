@@ -1,6 +1,14 @@
 import { AgentApp } from "./src/core/app.ts";
 import { type AppConfig, loadConfig } from "./src/core/config.ts";
 import { createLogger } from "./src/core/logger.ts";
+import type {
+  ConfigField,
+  ConfigSchema,
+  PackageBootstrapModule,
+  PackageKind,
+} from "./src/core/types.ts";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 type Command = "start" | "status" | "help";
 
@@ -9,28 +17,119 @@ interface ParsedArgs {
   env: Record<string, string>;
 }
 
-const FLAG_ENV: Record<string, string> = {
-  "ai-provider": "AI_PROVIDER",
-  "ai-providers": "AI_PROVIDERS",
-  "openai-api": "OPENAI_API",
-  "plugins-dir": "PLUGINS_DIR",
-  "platforms": "PLATFORMS",
-  "platforms-dir": "PLATFORMS_DIR",
-  "provider": "AI_PROVIDER",
-  "providers": "AI_PROVIDERS",
-  "providers-dir": "PROVIDERS_DIR",
-  "reply-mode": "AGENT_REPLY_MODE",
-  "personality": "PERSONALITY_PATH",
-  "web-search-max-results": "WEB_SEARCH_MAX_RESULTS",
-  "web-search-providers": "WEB_SEARCH_PROVIDERS",
-  "web-search-providers-dir": "WEB_SEARCH_PROVIDERS_DIR",
+const ROOT_CONFIG_SCHEMA: ConfigSchema = {
+  module: "core",
+  label: "Missy Core",
+  fields: [
+    {
+      key: "provider",
+      label: "Default AI Provider",
+      type: "string",
+      env: "AI_PROVIDER",
+      flag: "provider",
+      aliases: ["ai-provider"],
+    },
+    {
+      key: "providers",
+      label: "Loaded AI Providers",
+      type: "string",
+      env: "AI_PROVIDERS",
+      flag: "providers",
+      aliases: ["ai-providers"],
+    },
+    {
+      key: "providersDir",
+      label: "Providers Directory",
+      type: "string",
+      env: "PROVIDERS_DIR",
+      flag: "providers-dir",
+    },
+    {
+      key: "platforms",
+      label: "Enabled Platforms",
+      type: "string",
+      env: "PLATFORMS",
+      flag: "platforms",
+    },
+    {
+      key: "platformsDir",
+      label: "Platforms Directory",
+      type: "string",
+      env: "PLATFORMS_DIR",
+      flag: "platforms-dir",
+    },
+    {
+      key: "plugins",
+      label: "Enabled Plugins",
+      type: "string",
+      env: "PLUGINS",
+      flag: "plugins",
+    },
+    {
+      key: "pluginsDir",
+      label: "Plugins Directory",
+      type: "string",
+      env: "PLUGINS_DIR",
+      flag: "plugins-dir",
+    },
+    {
+      key: "replyMode",
+      label: "Reply Mode",
+      type: "select",
+      options: ["xml", "message"],
+      env: "AGENT_REPLY_MODE",
+      flag: "reply-mode",
+    },
+    {
+      key: "personalityPath",
+      label: "Personality XML Path",
+      type: "string",
+      env: "PERSONALITY_PATH",
+      flag: "personality",
+    },
+    {
+      key: "keystore.path",
+      label: "Plugin Keystore Path",
+      type: "string",
+      env: "KEYSTORE_PATH",
+      flag: "keystore-path",
+    },
+    {
+      key: "keystore.enabled",
+      label: "Plugin Keystore Enabled",
+      type: "boolean",
+      env: "KEYSTORE_ENABLED",
+      flag: "keystore-enabled",
+    },
+    {
+      key: "webSearch.providersDir",
+      label: "Web Search Providers Directory",
+      type: "string",
+      env: "WEB_SEARCH_PROVIDERS_DIR",
+      flag: "web-search-providers-dir",
+    },
+    {
+      key: "webSearch.providerNames",
+      label: "Web Search Providers",
+      type: "string",
+      env: "WEB_SEARCH_PROVIDERS",
+      flag: "web-search-providers",
+    },
+  ],
 };
 
 if (import.meta.main) {
-  const parsed = parseArgs(Deno.args);
+  const packageBootstraps = await discoverPackageBootstraps("src");
+  const schemas = [
+    ROOT_CONFIG_SCHEMA,
+    ...packageBootstraps.flatMap((item) =>
+      item.configSchema ? [item.configSchema] : []
+    ),
+  ];
+  const parsed = parseArgs(Deno.args, buildFlagEnv(schemas));
 
   if (parsed.command === "help") {
-    printHelp();
+    printHelp(schemas);
     Deno.exit(0);
   }
 
@@ -50,7 +149,7 @@ if (import.meta.main) {
   const config = loadConfig(env);
 
   if (parsed.command === "status") {
-    await printStatus(config, env);
+    await printStatus(config, env, packageBootstraps);
     Deno.exit(0);
   }
 
@@ -64,7 +163,10 @@ if (import.meta.main) {
   await app.start();
 }
 
-function parseArgs(args: string[]): ParsedArgs {
+function parseArgs(
+  args: string[],
+  flagEnv: Record<string, string>,
+): ParsedArgs {
   const env: Record<string, string> = {};
   let command: Command = "start";
 
@@ -96,7 +198,7 @@ function parseArgs(args: string[]): ParsedArgs {
     }
 
     const [rawName, ...valueParts] = arg.slice(2).split("=");
-    const envName = FLAG_ENV[rawName];
+    const envName = flagEnv[rawName];
     if (!envName) {
       throw new Error(`Unknown flag: --${rawName}`);
     }
@@ -109,7 +211,16 @@ function parseArgs(args: string[]): ParsedArgs {
 async function printStatus(
   config: AppConfig,
   env: Record<string, string>,
+  packageBootstraps: PackageBootstrapModule[],
 ): Promise<void> {
+  const requiredFieldChecks = requiredPackageFields(config, packageBootstraps)
+    .map((field) =>
+      keyCheck(
+        field.env ?? field.key,
+        stringValue(getConfigPath(config, field.key)) ?? env[field.env ?? ""],
+        true,
+      )
+    );
   const checks = [
     await fileCheck("personality", config.personalityPath),
     ...await folderModuleChecks("plugin", config.pluginsDir),
@@ -128,26 +239,7 @@ async function printStatus(
       config.webSearch.providersDir,
       config.webSearch.providerNames,
     ),
-    keyCheck(
-      "OPENAI_API_KEY",
-      env.OPENAI_API_KEY,
-      config.providerNames.includes("openai"),
-    ),
-    keyCheck(
-      "MISTRAL_API_KEY",
-      env.MISTRAL_API_KEY,
-      config.providerNames.includes("mistral"),
-    ),
-    keyCheck(
-      "DISCORD_TOKEN",
-      env.DISCORD_TOKEN,
-      config.enabledPlatforms.includes("discord"),
-    ),
-    keyCheck(
-      "BRAVE_SEARCH_API_KEY",
-      env.BRAVE_SEARCH_API_KEY,
-      config.webSearch.providerNames.includes("brave"),
-    ),
+    ...requiredFieldChecks,
   ];
 
   console.log("Missy bootstrap status");
@@ -157,12 +249,18 @@ async function printStatus(
     `Loaded AI providers: ${config.providerNames.join(", ") || "(none)"}`,
   );
   console.log(`Platforms: ${config.enabledPlatforms.join(", ") || "(none)"}`);
+  console.log(`Plugins: ${config.pluginNames.join(", ") || "all"}`);
   console.log(
     `Web search providers: ${
       config.webSearch.providerNames.join(", ") || "(none)"
     }`,
   );
   console.log(`Reply mode: ${config.replyMode}`);
+  console.log(
+    `Keystore: ${config.keystore.enabled ? "enabled" : "disabled"} (${
+      config.keystore.path
+    })`,
+  );
   console.log("");
 
   for (const check of checks) {
@@ -190,7 +288,7 @@ async function folderModuleChecks(
       checks.push(
         await fileCheck(
           `${kind} module ${entry.name}`,
-          `${folder}/${entry.name}/mod.ts`,
+          `${folder}/${entry.name}/bootstrap.ts`,
         ),
       );
     }
@@ -207,7 +305,7 @@ async function namedModuleChecks(
 ): Promise<StatusCheck[]> {
   return await Promise.all(
     names.map((name) =>
-      fileCheck(`${kind} ${name}`, `${folder}/${name}/mod.ts`)
+      fileCheck(`${kind} ${name}`, `${folder}/${name}/bootstrap.ts`)
     ),
   );
 }
@@ -223,7 +321,16 @@ function keyCheck(
   };
 }
 
-function printHelp(): void {
+function printHelp(schemas: ConfigSchema[]): void {
+  const flags = schemas
+    .flatMap((schema) => schema.fields)
+    .filter((field) => field.env)
+    .flatMap((field) => [
+      field.flag ?? envToFlag(field.env!),
+      ...(field.aliases ?? []),
+    ])
+    .sort();
+
   console.log(`Missy bootstrap (Deno runtime)
 
 Usage:
@@ -231,13 +338,7 @@ Usage:
   deno task status             Print readiness status
 
 Flags:
-  --provider=<name>              Set default AI provider
-  --providers=<a,b>              Set loaded AI providers
-  --platforms=<a,b>              Set enabled platforms
-  --reply-mode=<xml|message>     Set reply mode
-  --personality=<path>           Set personality XML path
-  --web-search-providers=<a,b>   Set web search providers
-  --web-search-max-results=<n>   Set web search result count
+${flags.map((flag) => `  --${flag}=<value>`).join("\n")}
   --set=KEY=VALUE                Override any environment variable
 
 For the interactive setup wizard, use the oclif CLI:
@@ -251,4 +352,111 @@ For the interactive setup wizard, use the oclif CLI:
 interface StatusCheck {
   label: string;
   ok: boolean;
+}
+
+async function discoverPackageBootstraps(
+  rootDir: string,
+): Promise<PackageBootstrapModule[]> {
+  const bootstraps: PackageBootstrapModule[] = [];
+  await collectPackageBootstraps(rootDir, bootstraps);
+  return bootstraps;
+}
+
+async function collectPackageBootstraps(
+  dir: string,
+  bootstraps: PackageBootstrapModule[],
+): Promise<void> {
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (!entry.isDirectory) {
+      continue;
+    }
+    if (entry.name === "core" || entry.name === "src") {
+      continue;
+    }
+
+    const bootstrapPath = join(path, "bootstrap.ts");
+    try {
+      const stat = await Deno.stat(bootstrapPath);
+      if (stat.isFile) {
+        const imported = await import(pathToFileURL(bootstrapPath).href);
+        const bootstrap = (imported.default ?? imported) as
+          | PackageBootstrapModule
+          | undefined;
+        if (bootstrap?.metadata && bootstrap.kind) {
+          bootstraps.push(bootstrap);
+          continue;
+        }
+      }
+    } catch {
+      // Not a package root; keep looking below.
+    }
+
+    await collectPackageBootstraps(path, bootstraps);
+  }
+}
+
+function buildFlagEnv(schemas: ConfigSchema[]): Record<string, string> {
+  const flags: Record<string, string> = {};
+  for (const field of schemas.flatMap((schema) => schema.fields)) {
+    if (!field.env) {
+      continue;
+    }
+
+    flags[field.flag ?? envToFlag(field.env)] = field.env;
+    for (const alias of field.aliases ?? []) {
+      flags[alias] = field.env;
+    }
+  }
+  return flags;
+}
+
+function envToFlag(envName: string): string {
+  return envName.toLowerCase().replaceAll("_", "-");
+}
+
+function requiredPackageFields(
+  config: AppConfig,
+  bootstraps: PackageBootstrapModule[],
+): ConfigField[] {
+  const enabledNames = new Set([
+    ...config.providerNames,
+    ...config.enabledPlatforms,
+    ...config.webSearch.providerNames,
+    ...(config.pluginNames.length > 0
+      ? config.pluginNames
+      : bootstraps
+        .filter((item) => item.kind === "plugin")
+        .map((item) => item.metadata.name)),
+  ]);
+
+  return bootstraps
+    .filter((item) => enabledNames.has(item.metadata.name))
+    .flatMap((item) => item.configSchema?.fields ?? [])
+    .filter((field) => field.required);
+}
+
+function getConfigPath(config: AppConfig, path: string): unknown {
+  const parts = path.split(".");
+  let current: unknown = config;
+  for (const part of parts) {
+    if (typeof current !== "object" || current === null) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function stringValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.join(",");
+  }
+  return undefined;
 }

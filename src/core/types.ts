@@ -19,6 +19,7 @@ export interface AgentContext {
   ai: AiProvider;
   config: AppConfig;
   handleMessage(message: InboundMessage): Promise<void>;
+  keystore: PluginKeystore;
   logger: Logger;
   memory: MemoryStore;
   personality: Personality;
@@ -43,6 +44,44 @@ export interface PluginModule {
   metadata: ModuleMetadata;
   configSchema?: ConfigSchema;
   setup(context: AgentContext): Promise<void> | void;
+}
+
+export interface PluginBootstrapContext {
+  globalKeystore: PluginKeystore;
+  keystore: PluginKeystore;
+  logger: Logger;
+  pluginName: string;
+}
+
+export interface PluginBootstrapModule {
+  bootstrap(
+    context: PluginBootstrapContext,
+  ): Promise<PluginModule> | PluginModule;
+}
+
+export type PackageKind =
+  | "provider"
+  | "platform"
+  | "plugin"
+  | "web-search-provider"
+  | "package";
+
+export interface PackageBootstrapModule {
+  metadata: ModuleMetadata;
+  kind: PackageKind;
+  modulePath?: string;
+  configSchema?: ConfigSchema;
+  bootstrap?(
+    context: PluginBootstrapContext,
+  ): Promise<PluginModule> | PluginModule;
+}
+
+export interface PluginKeystore {
+  get<T = unknown>(key: string): T | undefined;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  entries(): Record<string, unknown>;
+  namespace(name: string): PluginKeystore;
 }
 
 export interface ProviderModule {
@@ -192,6 +231,12 @@ export interface ConfigField {
   default?: string | number | boolean;
   /** Options for "select" type */
   options?: string[];
+  /** Environment variable that maps to this field */
+  env?: string;
+  /** CLI flag name used by bootstrap.ts for this field */
+  flag?: string;
+  /** Additional CLI flag aliases used by bootstrap.ts for this field */
+  aliases?: string[];
 }
 
 export interface ConfigSchema {

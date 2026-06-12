@@ -6,6 +6,7 @@ import {
   discoverPlugins,
   discoverProviders,
 } from "./module-loader.ts";
+import { FileKeystore } from "./keystore.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { PlatformServiceRegistry } from "./platform-service-registry.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
@@ -36,6 +37,7 @@ export class AgentApp {
 
   #platforms: AgentPlatform[] = [];
   #memory?: MemoryStore;
+  #keystore?: FileKeystore;
   #plugins: AgentContext["plugins"] = [];
   #providers?: ProviderRegistry;
   #context?: AgentContext;
@@ -57,6 +59,12 @@ export class AgentApp {
       this.config.memory.enabled,
     );
     await this.#memory.load();
+
+    this.#keystore = new FileKeystore(
+      this.config.keystore.path,
+      this.config.keystore.enabled,
+    );
+    await this.#keystore.load();
 
     this.#providers = new ProviderRegistry(this.config.providerName);
     const providerModules = await discoverProviders(
@@ -86,6 +94,7 @@ export class AgentApp {
       providers: this.#providers,
       tools: this.tools,
       handleMessage: (message) => this.handleMessage(message),
+      keystore: this.#keystore,
     };
 
     // Platforms start first so their services are available to plugins
@@ -100,7 +109,12 @@ export class AgentApp {
       this.logger.info(`Started platform ${platform.name}`);
     }
 
-    const plugins = await discoverPlugins(this.config.pluginsDir, this.logger);
+    const plugins = await discoverPlugins(
+      this.config.pluginsDir,
+      this.logger,
+      this.#keystore,
+      this.config.pluginNames.length > 0 ? this.config.pluginNames : undefined,
+    );
     for (const plugin of plugins) {
       await plugin.setup(this.#context);
       this.#plugins.push(plugin.metadata);
