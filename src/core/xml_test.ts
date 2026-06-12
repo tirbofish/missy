@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { expect, test } from "bun:test";
 import {
   fallbackAgentOutput,
   formatAgentOutputXml,
@@ -6,7 +6,7 @@ import {
   tryParseAgentOutputXml,
 } from "./xml.ts";
 
-Deno.test("parseAgentOutputXml parses messages and tool calls", () => {
+test("parseAgentOutputXml parses messages and tool calls", () => {
   const output = parseAgentOutputXml(`
     <agent>
       <respond>false</respond>
@@ -22,7 +22,7 @@ Deno.test("parseAgentOutputXml parses messages and tool calls", () => {
     </agent>
   `);
 
-  assertEquals(output, {
+  expect(output).toEqual({
     message: "Hello & welcome.",
     memoryUpdates: [{ key: "location", value: "Sydney" }],
     respond: false,
@@ -30,19 +30,20 @@ Deno.test("parseAgentOutputXml parses messages and tool calls", () => {
   });
 });
 
-Deno.test("formatAgentOutputXml formats the platform XML response", () => {
-  assertEquals(
+test("formatAgentOutputXml formats the platform XML response", () => {
+  expect(
     formatAgentOutputXml({
       message: "Use <xml> safely.",
       memoryUpdates: [],
       respond: true,
       toolCalls: [],
     }),
+  ).toEqual(
     "<agent><respond>true</respond><message>Use &lt;xml&gt; safely.</message><memory_updates></memory_updates><tool_calls></tool_calls></agent>",
   );
 });
 
-Deno.test("tryParseAgentOutputXml extracts fenced XML", () => {
+test("tryParseAgentOutputXml extracts fenced XML", () => {
   const parsed = tryParseAgentOutputXml(`
     \`\`\`xml
     <agent>
@@ -54,12 +55,12 @@ Deno.test("tryParseAgentOutputXml extracts fenced XML", () => {
     \`\`\`
   `);
 
-  assertEquals(parsed.ok, true);
-  assertEquals(parsed.output?.message, "fixed");
+  expect(parsed.ok).toEqual(true);
+  expect(parsed.output?.message).toEqual("fixed");
 });
 
-Deno.test("fallbackAgentOutput preserves plain text as a response", () => {
-  assertEquals(fallbackAgentOutput("hello there"), {
+test("fallbackAgentOutput preserves plain text as a response", () => {
+  expect(fallbackAgentOutput("hello there")).toEqual({
     message: "hello there",
     memoryUpdates: [],
     respond: true,

@@ -103,8 +103,10 @@ const module: WebSearchProviderModule = {
     version: "0.1.0",
   },
   configSchema,
-  createProvider: (config) =>
-    new BraveSearchProvider(config.webSearch.braveApiKey),
+  createProvider: (config) => {
+    const ws = (config.webSearch ?? {}) as Record<string, unknown>;
+    return new BraveSearchProvider(ws.braveApiKey as string | undefined);
+  },
 };
 
 function normalizeBrave(payload: unknown): WebSearchResult[] {

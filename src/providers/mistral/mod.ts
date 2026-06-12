@@ -1,5 +1,4 @@
 import { Mistral } from "@mistralai/mistralai";
-import type { MistralProviderConfig } from "../../core/config.ts";
 import type {
   AiGenerateRequest,
   AiProvider,
@@ -7,6 +6,12 @@ import type {
   ProviderModule,
 } from "../../core/types.ts";
 import { createLogger } from "../../core/logger.ts";
+
+export interface MistralProviderConfig {
+  apiKey?: string;
+  model: string;
+  temperature: number;
+}
 
 export class MistralProvider implements AiProvider {
   #client: Mistral;
@@ -86,6 +91,18 @@ const configSchema: ConfigSchema = {
   ],
 };
 
+function parseMistralConfig(data: Record<string, unknown>): MistralProviderConfig {
+  const mistral = (data.mistral ?? data) as Record<string, unknown>;
+  const env = process.env as Record<string, string>;
+  return {
+    apiKey: (mistral.apiKey as string) ?? env["MISTRAL_API_KEY"],
+    model: (mistral.model as string) ?? env["MISTRAL_MODEL"] ?? "mistral-small-latest",
+    temperature: typeof mistral.temperature === "number"
+      ? mistral.temperature
+      : 0.2,
+  };
+}
+
 const module: ProviderModule = {
   metadata: {
     name: "mistral",
@@ -93,7 +110,8 @@ const module: ProviderModule = {
     version: "0.1.0",
   },
   configSchema,
-  createProvider: (config) => new MistralProvider(config.mistral),
+  createProvider: (config) =>
+    new MistralProvider(parseMistralConfig(config)),
 };
 
 export default module;

@@ -1,3 +1,4 @@
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Logger } from "./logger.ts";
@@ -152,8 +153,8 @@ async function loadPluginModules(
     ? new Set(enabledPluginNames)
     : undefined;
 
-  for await (const entry of Deno.readDir(rootDir)) {
-    if (!entry.isDirectory) {
+  for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
       continue;
     }
     if (enabled && !enabled.has(entry.name)) {
@@ -227,7 +228,7 @@ async function loadPackageBootstrap(
 ): Promise<PackageBootstrapModule | undefined> {
   const bootstrapPath = join(packageRoot, "bootstrap.ts");
   try {
-    await Deno.stat(bootstrapPath);
+    statSync(bootstrapPath);
   } catch {
     return undefined;
   }
@@ -322,7 +323,7 @@ async function loadModule<T>(
   logger: Logger,
 ): Promise<T | undefined> {
   try {
-    await Deno.stat(modPath);
+    statSync(modPath);
   } catch {
     return undefined;
   }

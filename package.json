@@ -15,16 +15,29 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.cli.json",
-    "dev": "node --loader tsx bin/dev.js",
-    "start": "node bin/run.js"
+    "dev": "bun --watch bootstrap.ts start",
+    "start": "bun bootstrap.ts start",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "setup": "bun bin/dev.js interactive"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.0.0",
+    "@mistralai/mistralai": "^2.2.0",
     "@oclif/core": "^4.0.0",
+    "openai": "^4.96.0",
+    "@session.js/client": "^0.0.57",
+    "@session.js/mnemonic": "^1.0.6",
+    "@session.js/types": "^1.0.19",
     "chalk": "^5.3.0",
+    "qrcode": "^1.5.4",
+    "discord.js": "^14.22.1",
+    "long": "^5.2.3",
+    "matrix-bot-sdk": "^0.8.0",
     "matrix-js-sdk": "^41.7.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }

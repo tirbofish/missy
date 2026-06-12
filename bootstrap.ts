@@ -7,6 +7,7 @@ import type {
   PackageBootstrapModule,
   PackageKind,
 } from "./src/core/types.ts";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -126,41 +127,47 @@ if (import.meta.main) {
       item.configSchema ? [item.configSchema] : []
     ),
   ];
-  const parsed = parseArgs(Deno.args, buildFlagEnv(schemas));
+  const parsed = parseArgs(process.argv.slice(2), buildFlagEnv(schemas));
 
   if (parsed.command === "help") {
     printHelp(schemas);
-    Deno.exit(0);
+    process.exit(0);
   }
 
   // Ensure missy.config.json exists before attempting to start
   try {
-    Deno.statSync("missy.config.json");
+    statSync("missy.config.json");
   } catch {
     console.error(
       "\x1b[33mNo missy.config.json found.\x1b[0m Run the interactive setup first:\n" +
-      "  deno task setup\n" +
-      "  # or: node bin/dev.js\n",
+      "  bun run setup\n" +
+      "  # or: bun bin/dev.js\n",
     );
-    Deno.exit(1);
+    process.exit(1);
   }
 
-  const env = { ...Deno.env.toObject(), ...parsed.env };
+  const env = { ...process.env, ...parsed.env } as Record<string, string>;
   const config = loadConfig(env);
 
   if (parsed.command === "status") {
     await printStatus(config, env, packageBootstraps);
-    Deno.exit(0);
+    process.exit(0);
   }
 
   const logger = createLogger("bootstrap");
   const app = new AgentApp(config, logger);
 
-  addEventListener("unload", () => {
+  const cleanup = () => {
     app.stop().catch((error) => logger.error("Failed to stop cleanly", error));
-  });
+  };
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+  process.on("beforeExit", cleanup);
 
+  const setupStartedAt = performance.now();
   await app.start();
+  const timeToSetupMs = Math.round(performance.now() - setupStartedAt);
+  console.log(`\x1b[32mReady! time=${timeToSetupMs}ms\x1b[0m`);
 }
 
 function parseArgs(
@@ -236,8 +243,8 @@ async function printStatus(
     ),
     ...await namedModuleChecks(
       "web search provider",
-      config.webSearch.providersDir,
-      config.webSearch.providerNames,
+      config.webSearchProvidersDir,
+      config.webSearchProviderNames,
     ),
     ...requiredFieldChecks,
   ];
@@ -252,7 +259,7 @@ async function printStatus(
   console.log(`Plugins: ${config.pluginNames.join(", ") || "all"}`);
   console.log(
     `Web search providers: ${
-      config.webSearch.providerNames.join(", ") || "(none)"
+      config.webSearchProviderNames.join(", ") || "(none)"
     }`,
   );
   console.log(`Reply mode: ${config.replyMode}`);
@@ -270,8 +277,8 @@ async function printStatus(
 
 async function fileCheck(label: string, path: string): Promise<StatusCheck> {
   try {
-    const stat = await Deno.stat(path);
-    return { label: `${label}: ${path}`, ok: stat.isFile };
+    const s = statSync(path);
+    return { label: `${label}: ${path}`, ok: s.isFile() };
   } catch {
     return { label: `${label}: ${path}`, ok: false };
   }
@@ -283,8 +290,8 @@ async function folderModuleChecks(
 ): Promise<StatusCheck[]> {
   const checks: StatusCheck[] = [];
   try {
-    for await (const entry of Deno.readDir(folder)) {
-      if (!entry.isDirectory) continue;
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
       checks.push(
         await fileCheck(
           `${kind} module ${entry.name}`,
@@ -331,21 +338,21 @@ function printHelp(schemas: ConfigSchema[]): void {
     ])
     .sort();
 
-  console.log(`Missy bootstrap (Deno runtime)
+  console.log(`Missy bootstrap (Bun runtime)
 
 Usage:
-  deno task start              Start Missy with defaults/env
-  deno task status             Print readiness status
+  bun run start                 Start Missy with defaults/env
+  bun run status                Print readiness status
 
 Flags:
 ${flags.map((flag) => `  --${flag}=<value>`).join("\n")}
   --set=KEY=VALUE                Override any environment variable
 
 For the interactive setup wizard, use the oclif CLI:
-  node bin/dev.js
-  node bin/dev.js interactive
-  node bin/dev.js start --provider=mistral --model=mistral-large-latest
-  node bin/dev.js status
+  bun bin/dev.js
+  bun bin/dev.js interactive
+  bun bin/dev.js start --provider=mistral --model=mistral-large-latest
+  bun bin/dev.js status
 `);
 }
 
@@ -366,33 +373,38 @@ async function collectPackageBootstraps(
   dir: string,
   bootstraps: PackageBootstrapModule[],
 ): Promise<void> {
-  for await (const entry of Deno.readDir(dir)) {
-    const path = join(dir, entry.name);
-    if (!entry.isDirectory) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (!entry.isDirectory()) {
       continue;
     }
     if (entry.name === "core" || entry.name === "src") {
       continue;
     }
 
-    const bootstrapPath = join(path, "bootstrap.ts");
+    const bootstrapPath = join(p, "bootstrap.ts");
+    let hasBootstrap = false;
     try {
-      const stat = await Deno.stat(bootstrapPath);
-      if (stat.isFile) {
-        const imported = await import(pathToFileURL(bootstrapPath).href);
-        const bootstrap = (imported.default ?? imported) as
-          | PackageBootstrapModule
-          | undefined;
-        if (bootstrap?.metadata && bootstrap.kind) {
-          bootstraps.push(bootstrap);
-          continue;
-        }
+      const s = statSync(bootstrapPath);
+      if (s.isFile()) {
+        hasBootstrap = true;
       }
     } catch {
       // Not a package root; keep looking below.
     }
 
-    await collectPackageBootstraps(path, bootstraps);
+    if (hasBootstrap) {
+      const imported = await import(pathToFileURL(bootstrapPath).href);
+      const bootstrap = (imported.default ?? imported) as
+        | PackageBootstrapModule
+        | undefined;
+      if (bootstrap?.metadata && bootstrap.kind) {
+        bootstraps.push(bootstrap);
+        continue;
+      }
+    }
+
+    await collectPackageBootstraps(p, bootstraps);
   }
 }
 
@@ -422,7 +434,7 @@ function requiredPackageFields(
   const enabledNames = new Set([
     ...config.providerNames,
     ...config.enabledPlatforms,
-    ...config.webSearch.providerNames,
+    ...config.webSearchProviderNames,
     ...(config.pluginNames.length > 0
       ? config.pluginNames
       : bootstraps
@@ -438,7 +450,7 @@ function requiredPackageFields(
 
 function getConfigPath(config: AppConfig, path: string): unknown {
   const parts = path.split(".");
-  let current: unknown = config;
+  let current: unknown = config.data;
   for (const part of parts) {
     if (typeof current !== "object" || current === null) {
       return undefined;

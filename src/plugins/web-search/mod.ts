@@ -37,13 +37,13 @@ const module: PluginModule = {
   async setup(context) {
     const providers = new Map<string, WebSearchProvider>();
     const providerModules = await discoverWebSearchProviders(
-      context.config.webSearch.providersDir,
-      context.config.webSearch.providerNames,
+      context.config.webSearchProvidersDir,
+      context.config.webSearchProviderNames,
       context.logger.child("web-search"),
     );
 
     for (const providerModule of providerModules) {
-      const provider = providerModule.createProvider(context.config);
+      const provider = providerModule.createProvider(context.config.data);
       providers.set(provider.name, provider);
       context.logger.info(`Loaded web search provider ${provider.name}`);
     }
@@ -67,7 +67,7 @@ const module: PluginModule = {
       async execute(input) {
         const parsed = parseInput(input);
         const maxResults = parsed.maxResults ??
-          context.config.webSearch.maxResults;
+          ((context.config.data.webSearch as Record<string, unknown>)?.maxResults as number) ?? 5;
         const providerNames = parsed.providers ?? [...providers.keys()];
 
         const settled = await Promise.allSettled(

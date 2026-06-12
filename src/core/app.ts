@@ -15,6 +15,7 @@ import type {
   AgentContext,
   AgentOutput,
   AgentPlatform,
+  AiImage,
   InboundMessage,
   MemoryUpdate,
   ToolCall,
@@ -36,6 +37,7 @@ export class AgentApp {
   readonly tools = new ToolRegistry();
 
   #platforms: AgentPlatform[] = [];
+  #platformContexts = new Map<string, string>();
   #memory?: MemoryStore;
   #keystore?: FileKeystore;
   #plugins: AgentContext["plugins"] = [];
@@ -76,7 +78,7 @@ export class AgentApp {
     for (const providerModule of providerModules) {
       this.#providers.register(
         providerModule.metadata.name,
-        providerModule.createProvider(this.config),
+        providerModule.createProvider(this.config.data),
       );
       this.logger.info(`Loaded AI provider ${providerModule.metadata.name}`);
     }
@@ -106,6 +108,12 @@ export class AgentApp {
 
     for (const platform of this.#platforms) {
       await platform.start(this.#context);
+      if (platform.getSystemContext) {
+        this.#platformContexts.set(
+          platform.name,
+          platform.getSystemContext(),
+        );
+      }
       this.logger.info(`Started platform ${platform.name}`);
     }
 
@@ -140,6 +148,7 @@ export class AgentApp {
     const system = buildSystemInstructions({
       personalityXml: this.#context.personality.xml,
       tools: this.tools.list(),
+      platformContext: this.#platformContexts.get(message.platform),
     });
 
     const inferredMemory = inferMemoryUpdates(message.content);
@@ -150,10 +159,12 @@ export class AgentApp {
     ).catch((e) => this.logger.warn("Memory update failed (pre)", e));
 
     const userMemory = this.#context.memory.getUserMemory(message.authorId);
+    const images = extractImages(message);
 
     const firstOutput = await this.#context.ai.generate({
       instructions: system,
       input: buildConversationInput(message, userMemory),
+      images,
     });
 
     const parsed = await this.#parseOrRepairOutput(system, firstOutput);
@@ -198,6 +209,8 @@ export class AgentApp {
       results.push(await this.#executeToolCall(call, message));
     }
 
+    const images = extractImages(message);
+
     const finalRawXml = await this.#context.ai.generate({
       instructions: system,
       input: buildFinalInput({
@@ -206,6 +219,7 @@ export class AgentApp {
         previousAssistantXml: firstRawXml,
         toolResultsXml: formatToolResultsXml(results),
       }),
+      images,
     });
 
     return await this.#parseOrRepairOutput(system, finalRawXml);
@@ -335,6 +349,17 @@ export function inferMemoryUpdates(content: string): MemoryUpdate[] {
 
 function normalizeMemoryValue(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Filter message attachments down to images with accessible URLs.
+ * Only returns attachments whose content type starts with "image/"
+ * and that have a URL (Discord CDN, resolved Matrix mxc, etc.).
+ */
+function extractImages(message: InboundMessage): AiImage[] {
+  return (message.attachments ?? [])
+    .filter((a) => a.url && a.contentType?.startsWith("image/"))
+    .map((a) => ({ url: a.url!, contentType: a.contentType }));
 }
 
 function previewModelOutput(output: string, maxLength = 1200): string {

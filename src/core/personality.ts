@@ -2,8 +2,10 @@ export interface Personality {
   xml: string;
 }
 
+import { readFileSync } from "node:fs";
+
 export async function loadPersonality(path: string): Promise<Personality> {
-  const xml = await Deno.readTextFile(path);
+  const xml = readFileSync(path, "utf-8");
   assertLooksLikeXml(xml, path);
   return { xml };
 }

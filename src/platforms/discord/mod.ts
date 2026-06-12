@@ -20,8 +20,10 @@ import type {
   ConfigSchema,
   ConversationMessage,
   InboundMessage,
+  MessageAttachment,
   PlatformModule,
 } from "../../core/types.ts";
+import type { AppConfig } from "../../core/config.ts";
 import { splitDiscordMessage } from "./message-split.ts";
 import type {
   DiscordMessageResult,
@@ -29,6 +31,44 @@ import type {
   DiscordUserInfo,
   SearchMessagesOptions,
 } from "./service.ts";
+
+interface DiscordPlatformConfig {
+  token?: string;
+  commandPrefix: string;
+  mentionOnly: boolean;
+  respondToAllMessages: boolean;
+  maxMessageLength: number;
+  includeReplyContext: boolean;
+  includeChannelContext: boolean;
+  channelContextCount: number;
+  observeReactions: boolean;
+  reactToAllMessages: boolean;
+  reactToHandledMessages: boolean;
+  handledReactionEmoji: string;
+  multiMessageDelimiter: string;
+  multiMessageDelayMs: number;
+}
+
+function parseDiscordConfig(config: AppConfig): DiscordPlatformConfig {
+  const d = (config.data.discord ?? {}) as Record<string, unknown>;
+  const env = process.env as Record<string, string>;
+  return {
+    token: (d.token as string) ?? env["DISCORD_TOKEN"],
+    commandPrefix: (d.commandPrefix as string) ?? env["DISCORD_COMMAND_PREFIX"] ?? "!M!",
+    mentionOnly: typeof d.mentionOnly === "boolean" ? d.mentionOnly : true,
+    respondToAllMessages: typeof d.respondToAllMessages === "boolean" ? d.respondToAllMessages : false,
+    maxMessageLength: typeof d.maxMessageLength === "number" ? d.maxMessageLength : 0,
+    includeReplyContext: typeof d.includeReplyContext === "boolean" ? d.includeReplyContext : true,
+    includeChannelContext: typeof d.includeChannelContext === "boolean" ? d.includeChannelContext : true,
+    channelContextCount: typeof d.channelContextCount === "number" ? d.channelContextCount : 10,
+    observeReactions: typeof d.observeReactions === "boolean" ? d.observeReactions : false,
+    reactToAllMessages: typeof d.reactToAllMessages === "boolean" ? d.reactToAllMessages : false,
+    reactToHandledMessages: typeof d.reactToHandledMessages === "boolean" ? d.reactToHandledMessages : false,
+    handledReactionEmoji: (d.handledReactionEmoji as string) ?? env["DISCORD_HANDLED_REACTION_EMOJI"] ?? "\u{1F440}",
+    multiMessageDelimiter: (d.multiMessageDelimiter as string) ?? env["DISCORD_MULTI_MESSAGE_DELIMITER"] ?? "|||",
+    multiMessageDelayMs: typeof d.multiMessageDelayMs === "number" ? d.multiMessageDelayMs : 1500,
+  };
+}
 
 class DiscordServiceImpl implements DiscordService {
   readonly platformName = "discord" as const;
@@ -167,11 +207,38 @@ class DiscordServiceImpl implements DiscordService {
 
 class DiscordPlatform implements AgentPlatform {
   readonly name = "discord";
+
+  getSystemContext(): string {
+    return [
+      "<platform>",
+      "  <name>Discord</name>",
+      "  <description>You are communicating through Discord, a chat platform with servers, channels, DMs, and threads.</description>",
+      "  <capabilities>",
+      "    <capability>Server channels (text, announcement, forum, thread)</capability>",
+      "    <capability>Direct messages and group DMs</capability>",
+      "    <capability>Slash commands (/missy, /memory, /tools, /plugins, /status)</capability>",
+      "    <capability>Emoji reactions</capability>",
+      "    <capability>Message replies and pinning</capability>",
+      "  </capabilities>",
+      "  <limits>",
+      "    <limit name=\"message_length\">2000 characters per message</limit>",
+      "  </limits>",
+      "  <routing>",
+      "    <rule>In DMs, you see and respond to every message.</rule>",
+      "    <rule>In servers, you only respond when @mentioned or when a command prefix is used.</rule>",
+      "  </routing>",
+      "</platform>",
+    ].join("\n");
+  }
+
   #client?: Client;
   #context?: AgentContext;
+  #discordConfig?: DiscordPlatformConfig;
 
   async start(context: AgentContext): Promise<void> {
-    const token = context.config.discord.token;
+    const config = parseDiscordConfig(context.config);
+    this.#discordConfig = config;
+    const token = config.token;
     if (!token) {
       throw new Error(
         "DISCORD_TOKEN is required when the discord platform is enabled.",
@@ -243,29 +310,30 @@ class DiscordPlatform implements AgentPlatform {
 
     const botUser = this.#client?.user;
     const mentioned = botUser ? message.mentions.has(botUser) : false;
-    const prefix = this.#context.config.discord.commandPrefix;
-    const isPrefixCommand = message.content.trimStart().startsWith(prefix);
-    const isReplyToBot = await this.#isReplyToBot(message);
-    const shouldHandleServerMessage = mentioned || isPrefixCommand ||
-      isReplyToBot ||
-      this.#context.config.discord.respondToAllMessages;
+    const prefix = this.#discordConfig.commandPrefix;
+    const isPrefixCommand = prefix
+      ? message.content.trimStart().startsWith(prefix)
+      : false;
 
-    if (this.#context.config.discord.reactToAllMessages) {
+    if (this.#discordConfig.reactToAllMessages) {
       await this.#reactToMessage(message);
     }
 
-    if (
-      this.#context.config.discord.mentionOnly && !shouldHandleServerMessage &&
-      message.guild
-    ) {
+    if (message.guild && !mentioned) {
       return;
     }
 
-    const content = isPrefixCommand
+    const routedContent = isPrefixCommand
       ? message.content.trimStart().slice(prefix.length).trim()
       : cleanMentionContent(message.content, botUser?.id);
+    const content = prefix && routedContent.startsWith(prefix)
+      ? routedContent.slice(prefix.length).trim()
+      : routedContent;
 
-    if (isPrefixCommand && await this.#handleLocalCommand(content, message)) {
+    if (
+      (isPrefixCommand || mentioned || !message.guild) &&
+      await this.#handleLocalCommand(content, message)
+    ) {
       return;
     }
 
@@ -275,8 +343,8 @@ class DiscordPlatform implements AgentPlatform {
     }
 
     if (
-      this.#context.config.discord.reactToHandledMessages &&
-      !this.#context.config.discord.reactToAllMessages
+      this.#discordConfig.reactToHandledMessages &&
+      !this.#discordConfig.reactToAllMessages
     ) {
       await this.#reactToMessage(message);
     }
@@ -294,17 +362,29 @@ class DiscordPlatform implements AgentPlatform {
       authorId: message.author.id,
       authorName: message.author.username,
       content,
+      attachments: message.attachments.size > 0
+        ? message.attachments.map((a) => ({
+          id: a.id,
+          contentType: a.contentType ?? undefined,
+          name: a.name ?? undefined,
+          size: a.size,
+          url: a.url,
+          width: a.width ?? undefined,
+          height: a.height ?? undefined,
+        }))
+        : undefined,
       context,
       replyTo: await this.#buildReplyReference(message),
       reply: async (content) => {
         await replyMultiMessage(
           message,
           content,
-          this.#context?.config.discord.multiMessageDelimiter ?? "|||",
-          this.#context?.config.discord.multiMessageDelayMs ?? 1500,
-          this.#context?.config.discord.maxMessageLength,
+          this.#discordConfig?.multiMessageDelimiter ?? "|||",
+          this.#discordConfig?.multiMessageDelayMs ?? 1500,
+          this.#discordConfig?.maxMessageLength,
         );
       },
+      timestamp: message.createdTimestamp,
     };
 
     try {
@@ -363,11 +443,12 @@ class DiscordPlatform implements AgentPlatform {
         await followUpMultiMessage(
           interaction,
           replyContent,
-          this.#context?.config.discord.multiMessageDelimiter ?? "|||",
-          this.#context?.config.discord.multiMessageDelayMs ?? 1500,
-          this.#context?.config.discord.maxMessageLength,
+          this.#discordConfig?.multiMessageDelimiter ?? "|||",
+          this.#discordConfig?.multiMessageDelayMs ?? 1500,
+          this.#discordConfig?.maxMessageLength,
         );
       },
+      timestamp: interaction.createdTimestamp,
     };
 
     await this.#context.handleMessage(inbound);
@@ -386,20 +467,15 @@ class DiscordPlatform implements AgentPlatform {
         message,
         [
           "Commands:",
-          `${this.#context?.config.discord.commandPrefix} help`,
-          `${this.#context?.config.discord.commandPrefix} status`,
-          `${this.#context?.config.discord.commandPrefix} memory`,
-          `${this.#context?.config.discord.commandPrefix} memory all`,
-          `${this.#context?.config.discord.commandPrefix} plugins`,
-          `${this.#context?.config.discord.commandPrefix} tools`,
-          `${this.#context?.config.discord.commandPrefix} <message for Missy>`,
+          "DMs: help, status, memory, memory all, plugins, tools, or any message.",
+          "Servers: mention Missy with help, status, memory, plugins, tools, or a message.",
           "/missy message:<message for Missy>",
           "/memory",
           "/plugins",
           "/tools",
           "/status",
         ].join("\n"),
-        this.#context?.config.discord.maxMessageLength,
+        this.#discordConfig?.maxMessageLength,
       );
       return true;
     }
@@ -408,7 +484,7 @@ class DiscordPlatform implements AgentPlatform {
       await replyToMessage(
         message,
         this.#formatStatus(),
-        this.#context?.config.discord.maxMessageLength,
+        this.#discordConfig?.maxMessageLength,
       );
       return true;
     }
@@ -417,7 +493,7 @@ class DiscordPlatform implements AgentPlatform {
       await replyToMessage(
         message,
         this.#formatTools(),
-        this.#context?.config.discord.maxMessageLength,
+        this.#discordConfig?.maxMessageLength,
       );
       return true;
     }
@@ -426,7 +502,7 @@ class DiscordPlatform implements AgentPlatform {
       await replyToMessage(
         message,
         this.#formatPlugins(),
-        this.#context?.config.discord.maxMessageLength,
+        this.#discordConfig?.maxMessageLength,
       );
       return true;
     }
@@ -435,7 +511,7 @@ class DiscordPlatform implements AgentPlatform {
       await replyToMessage(
         message,
         this.#formatMemory(message.author.id, args[0]?.toLowerCase() === "all"),
-        this.#context?.config.discord.maxMessageLength,
+        this.#discordConfig?.maxMessageLength,
       );
       return true;
     }
@@ -560,21 +636,17 @@ class DiscordPlatform implements AgentPlatform {
       `Tools: ${this.#context.tools.list().length}`,
       `Memory: ${this.#context.config.memory.enabled ? "enabled" : "disabled"}`,
       `DMs: enabled`,
-      `Server routing: ${
-        this.#context.config.discord.respondToAllMessages
-          ? "all messages"
-          : "mentions, replies, and prefix"
-      }`,
+      "Server routing: direct mentions only",
       `Reply context: ${
-        this.#context.config.discord.includeReplyContext
+        this.#discordConfig.includeReplyContext
           ? "enabled"
           : "disabled"
       }`,
       `Reaction events: ${
-        this.#context.config.discord.observeReactions ? "enabled" : "disabled"
+        this.#discordConfig.observeReactions ? "enabled" : "disabled"
       }`,
       `React to all messages: ${
-        this.#context.config.discord.reactToAllMessages ? "enabled" : "disabled"
+        this.#discordConfig.reactToAllMessages ? "enabled" : "disabled"
       }`,
       `Reply mode: ${this.#context.config.replyMode}`,
     ].join("\n");
@@ -582,7 +654,7 @@ class DiscordPlatform implements AgentPlatform {
 
   async #reactToMessage(message: Message): Promise<void> {
     await message.react(
-      this.#context?.config.discord.handledReactionEmoji ?? "\u{1F440}",
+      this.#discordConfig?.handledReactionEmoji ?? "\u{1F440}",
     )
       .catch((error) =>
         this.#context?.logger.warn("Failed to react to message", error)
@@ -607,22 +679,54 @@ class DiscordPlatform implements AgentPlatform {
     message: Message,
   ): Promise<InboundMessage["replyTo"]> {
     if (
-      !this.#context?.config.discord.includeReplyContext ||
+      !this.#discordConfig?.includeReplyContext ||
       !message.reference?.messageId
     ) {
       return undefined;
     }
 
+    return await this.#walkReplyChain(
+      message.reference.messageId,
+      message.reference.channelId ?? message.channelId,
+      5, // max depth to avoid infinite loops
+    );
+  }
+
+  /**
+   * Walk the reply chain backwards, building a nested replyTo structure.
+   * Each level fetches the parent message; if that message is itself a reply,
+   * the chain continues up to `maxDepth` levels.
+   */
+  async #walkReplyChain(
+    messageId: string,
+    channelId: string,
+    maxDepth: number,
+  ): Promise<InboundMessage["replyTo"]> {
     try {
-      const reference = await message.fetchReference();
-      return {
-        id: reference.id,
-        authorId: reference.author.id,
-        authorName: reference.author.username,
-        content: reference.content,
+      const channel = await this.#client?.channels.fetch(channelId);
+      if (!channel?.isTextBased()) return undefined;
+
+      const msg = await (channel as TextBasedChannel & { messages: any }).messages.fetch(messageId);
+      if (!msg) return undefined;
+
+      const ref: InboundMessage["replyTo"] = {
+        id: msg.id,
+        authorId: msg.author.id,
+        authorName: msg.author.username,
+        content: msg.content,
+        timestamp: msg.createdTimestamp,
       };
+
+      // Walk further up the chain if this message is also a reply
+      if (maxDepth > 1 && msg.reference?.messageId) {
+        const parentId = msg.reference.messageId;
+        const parentChannelId = msg.reference.channelId ?? (channel as { id: string }).id;
+        ref.replyTo = await this.#walkReplyChain(parentId, parentChannelId, maxDepth - 1);
+      }
+
+      return ref;
     } catch (error) {
-      this.#context.logger.warn("Failed to fetch Discord reply context", error);
+      this.#context?.logger.debug("Failed to walk Discord reply chain", error);
       return undefined;
     }
   }
@@ -630,11 +734,11 @@ class DiscordPlatform implements AgentPlatform {
   async #fetchChannelContext(
     message: Message,
   ): Promise<ConversationMessage[] | undefined> {
-    if (!this.#context?.config.discord.includeChannelContext) {
+    if (!this.#discordConfig?.includeChannelContext) {
       return undefined;
     }
 
-    const limit = this.#context.config.discord.channelContextCount;
+    const limit = this.#discordConfig.channelContextCount;
     if (limit <= 0) {
       return undefined;
     }
@@ -659,7 +763,19 @@ class DiscordPlatform implements AgentPlatform {
           authorId: m.author.id,
           authorName: m.author.username,
           content: m.content,
+          attachments: m.attachments.size > 0
+            ? m.attachments.map((a) => ({
+              id: a.id,
+              contentType: a.contentType ?? undefined,
+              name: a.name ?? undefined,
+              size: a.size,
+              url: a.url,
+              width: a.width ?? undefined,
+              height: a.height ?? undefined,
+            }))
+            : undefined,
           isBot: m.author.id === botId,
+          timestamp: m.createdTimestamp,
         }));
     } catch (error) {
       this.#context.logger.warn("Failed to fetch channel context", error);
@@ -673,7 +789,7 @@ class DiscordPlatform implements AgentPlatform {
   ): Promise<void> {
     const fullUser: User = user.partial ? await user.fetch() : user;
 
-    if (!this.#context?.config.discord.observeReactions || fullUser.bot) {
+    if (!this.#discordConfig?.observeReactions || fullUser.bot) {
       return;
     }
 
@@ -705,13 +821,14 @@ class DiscordPlatform implements AgentPlatform {
         authorId: botUserId,
         authorName: this.#client?.user?.username,
         content: message.content ?? "",
+        timestamp: message.createdTimestamp,
       },
       reply: async (content) => {
         if ("send" in message.channel) {
           for (
             const chunk of splitDiscordMessage(
               content,
-              this.#context?.config.discord.maxMessageLength,
+              this.#discordConfig?.maxMessageLength,
             )
           ) {
             await message.channel.send(chunk);

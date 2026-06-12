@@ -8,7 +8,7 @@ export default class Status extends Command {
   static override examples = ["<%= config.bin %> status"];
 
   async run(): Promise<void> {
-    const cmd = "deno run --allow-env --allow-read bootstrap.ts status";
+    const cmd = "bun bootstrap.ts status";
     execSync(cmd, { stdio: "inherit", cwd: process.cwd() });
   }
 }

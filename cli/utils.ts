@@ -20,6 +20,7 @@ export interface ConfigField {
   type: "string" | "number" | "boolean" | "select";
   required?: boolean;
   secret?: boolean;
+  hidden?: boolean;
   default?: string | number | boolean;
   options?: string[];
   env?: string;

@@ -10,9 +10,18 @@ export interface AiProvider {
   generate(request: AiGenerateRequest): Promise<string>;
 }
 
+export interface AiImage {
+  /** Publicly accessible image URL */
+  url: string;
+  /** MIME type (e.g. "image/png") */
+  contentType?: string;
+}
+
 export interface AiGenerateRequest {
   instructions: string;
   input: string;
+  /** Images to include in the vision request (URLs must be publicly accessible) */
+  images?: AiImage[];
 }
 
 export interface AgentContext {
@@ -87,13 +96,13 @@ export interface PluginKeystore {
 export interface ProviderModule {
   metadata: ModuleMetadata;
   configSchema?: ConfigSchema;
-  createProvider(config: AppConfig): AiProvider;
+  createProvider(config: Record<string, unknown>): AiProvider;
 }
 
 export interface WebSearchProviderModule {
   metadata: ModuleMetadata;
   configSchema?: ConfigSchema;
-  createProvider(config: AppConfig): WebSearchProvider;
+  createProvider(config: Record<string, unknown>): WebSearchProvider;
 }
 
 export interface WebSearchProvider {
@@ -141,6 +150,27 @@ export interface AgentPlatform {
   name: string;
   start(context: AgentContext): Promise<void>;
   stop(): Promise<void>;
+  /** Optional XML snippet injected into the system prompt to describe this platform. */
+  getSystemContext?(): string;
+}
+
+export interface MessageAttachment {
+  /** Platform-specific attachment ID */
+  id: string;
+  /** Content type (e.g. "image/png", "application/pdf") */
+  contentType?: string;
+  /** File name if available */
+  name?: string;
+  /** File size in bytes if available */
+  size?: number;
+  /** URL to the attachment (Discord proxy, Matrix mxc://, etc.) */
+  url?: string;
+  /** Width in pixels for images/videos */
+  width?: number;
+  /** Height in pixels for images/videos */
+  height?: number;
+  /** Caption or alt text if provided */
+  caption?: string;
 }
 
 export interface InboundMessage {
@@ -152,9 +182,12 @@ export interface InboundMessage {
   authorId: string;
   authorName?: string;
   content: string;
+  attachments?: MessageAttachment[];
   context?: ConversationMessage[];
   replyTo?: InboundMessageReference;
   reply(content: string): Promise<void>;
+  /** Unix milliseconds timestamp of the original event */
+  timestamp?: number;
 }
 
 export interface ConversationMessage {
@@ -162,7 +195,10 @@ export interface ConversationMessage {
   authorId: string;
   authorName?: string;
   content: string;
+  attachments?: MessageAttachment[];
   isBot?: boolean;
+  /** Unix milliseconds timestamp of the original event */
+  timestamp?: number;
 }
 
 export interface InboundMessageReference {
@@ -170,6 +206,10 @@ export interface InboundMessageReference {
   authorId: string;
   authorName?: string;
   content: string;
+  /** The message this message was itself replying to (recursive reply chain) */
+  replyTo?: InboundMessageReference;
+  /** Unix milliseconds timestamp of the original event */
+  timestamp?: number;
 }
 
 export interface AgentTool {

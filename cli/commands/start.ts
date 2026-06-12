@@ -19,7 +19,7 @@ export default class Start extends Command {
     }
 
     this.log(`${chalk.green("Starting Missy...")} (config: ${CONFIG_FILE})\n`);
-    const cmd = "deno run --allow-env --allow-read --allow-write --allow-net bootstrap.ts start";
+    const cmd = "bun bootstrap.ts start";
     execSync(cmd, { stdio: "inherit", cwd: process.cwd() });
   }
 }

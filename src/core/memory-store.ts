@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface MemoryRecord {
@@ -29,7 +30,7 @@ export class MemoryStore {
     }
 
     try {
-      const text = await Deno.readTextFile(this.path);
+      const text = readFileSync(this.path, "utf-8");
       const payload = JSON.parse(text);
       if (isRecord(payload) && isRecord(payload.users)) {
         for (const [userId, records] of Object.entries(payload.users)) {
@@ -59,7 +60,7 @@ export class MemoryStore {
         }
       }
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
+      if (!isNotFound(error)) {
         throw error;
       }
     }
@@ -124,13 +125,13 @@ export class MemoryStore {
       return;
     }
 
-    this.#saveQueue = this.#saveQueue.then(() => this.#writeToDisk()).catch(() => {});
+    this.#saveQueue = this.#saveQueue.then(() => { this.#writeToDisk(); }).catch(() => {});
     await this.#saveQueue;
   }
 
-  async #writeToDisk(): Promise<void> {
-    await Deno.mkdir(dirname(this.path), { recursive: true });
-    await Deno.writeTextFile(
+  #writeToDisk(): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    writeFileSync(
       this.path,
       `${JSON.stringify(this.toJSON(), null, 2)}\n`,
     );
@@ -148,4 +149,13 @@ export class MemoryStore {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code: string }).code === "ENOENT"
+  );
 }

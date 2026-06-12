@@ -1,11 +1,18 @@
-import OpenAI from "@openai/openai";
+import OpenAI from "openai";
 import type {
   AiGenerateRequest,
   AiProvider,
   ConfigSchema,
   ProviderModule,
 } from "../../core/types.ts";
-import type { OpenAIProviderConfig } from "../../core/config.ts";
+
+export interface OpenAIProviderConfig {
+  apiKey?: string;
+  baseURL?: string;
+  model: string;
+  temperature: number;
+  api: "responses" | "chat";
+}
 
 export class OpenAIProvider implements AiProvider {
   #client: OpenAI;
@@ -115,6 +122,25 @@ const configSchema: ConfigSchema = {
   ],
 };
 
+function parseOpenAIConfig(data: Record<string, unknown>): OpenAIProviderConfig {
+  const openai = (data.openai ?? data) as Record<string, unknown>;
+  const env = process.env as Record<string, string>;
+  return {
+    apiKey: (openai.apiKey as string) ?? env["OPENAI_API_KEY"],
+    baseURL: (openai.baseURL as string) ?? env["OPENAI_BASE_URL"],
+    model: (openai.model as string) ?? env["OPENAI_MODEL"] ?? "gpt-5.2",
+    temperature: typeof openai.temperature === "number"
+      ? openai.temperature
+      : 0.2,
+    api: parseApi((openai.api as string) ?? env["OPENAI_API"]),
+  };
+}
+
+function parseApi(value: string | undefined): "responses" | "chat" {
+  if (value === "chat") return "chat";
+  return "responses";
+}
+
 const module: ProviderModule = {
   metadata: {
     name: "openai",
@@ -122,7 +148,8 @@ const module: ProviderModule = {
     version: "0.1.0",
   },
   configSchema,
-  createProvider: (config) => new OpenAIProvider(config.openai),
+  createProvider: (config) =>
+    new OpenAIProvider(parseOpenAIConfig(config)),
 };
 
 export default module;

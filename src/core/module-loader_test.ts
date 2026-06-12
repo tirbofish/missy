@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { expect, test } from "bun:test";
 import { loadConfig } from "./config.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { discoverPlugins, discoverProvider } from "./module-loader.ts";
@@ -9,7 +9,7 @@ import { ProviderRegistry } from "./provider-registry.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 import type { AgentContext } from "./types.ts";
 
-Deno.test("discoverPlugins loads plugin folders dynamically", async () => {
+test("discoverPlugins loads plugin folders dynamically", async () => {
   const tools = new ToolRegistry();
   const keystore = new FileKeystore("data/test-keystore.json", false);
   await keystore.load();
@@ -48,18 +48,20 @@ Deno.test("discoverPlugins loads plugin folders dynamically", async () => {
     await plugin.setup(context);
   }
 
-  assertEquals(
-    tools.list().map((tool) => tool.name),
-    ["echo.repeat", "time.now", "weather.current", "web.search"],
-  );
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "echo.repeat",
+    "time.now",
+    "weather.current",
+    "web.search",
+  ]);
 });
 
-Deno.test("discoverProvider loads the configured provider folder", async () => {
+test("discoverProvider loads the configured provider folder", async () => {
   const provider = await discoverProvider(
     "src/providers",
     "openai",
     createLogger("test"),
   );
 
-  assertEquals(provider.metadata.name, "openai");
+  expect(provider.metadata.name).toEqual("openai");
 });

@@ -62,9 +62,6 @@ export default class Interactive extends Command {
 
     // ─── If config exists, ask what to edit ──────────────────────────────────
 
-    type EditSection = "modules" | "provider-config" | "platform-config" | "all";
-    let editSections: EditSection[] = ["all"];
-
     if (hasExisting) {
       this.log(chalk.green("Existing configuration found.\n"));
       this.log(`  ${chalk.cyan("Provider:")}    ${existing.provider ?? "(none)"}`);
@@ -77,9 +74,7 @@ export default class Interactive extends Command {
         message: "What would you like to do?",
         choices: [
           { name: "Keep everything, just launch", value: "none" },
-          { name: "Edit module selection (provider, plugins, platforms)", value: "modules" },
-          { name: "Edit provider/platform settings (API keys, models, etc.)", value: "config" },
-          { name: "Reconfigure everything", value: "all" },
+          { name: "Edit modules and their settings", value: "modules" },
         ],
         default: "none",
       });
@@ -93,26 +88,15 @@ export default class Interactive extends Command {
         }
         if (!flags["no-launch"]) {
           this.log(`\n${chalk.green("Starting Missy...")}\n`);
-          const cmd = "deno run --allow-env --allow-read --allow-write --allow-net bootstrap.ts start";
+          const cmd = "bun bootstrap.ts start";
           execSync(cmd, { stdio: "inherit", cwd: process.cwd() });
         }
         return;
       }
 
-      if (editChoice === "modules") {
-        editSections = ["modules"];
-      } else if (editChoice === "config") {
-        editSections = ["provider-config", "platform-config"];
-      } else {
-        editSections = ["all"];
-      }
+      // Any edit path continues into module selection, followed immediately by
+      // configuration for the selected modules.
     }
-
-    const editAll = editSections.includes("all");
-    const editModules = editAll || editSections.includes("modules");
-    const editProviderConfig = editAll || editSections.includes("provider-config");
-    const editPlatformConfig = editAll || editSections.includes("platform-config");
-    const editWebSearchConfig = editAll || editSections.includes("provider-config");
 
     // ─── Step 1: Choose which modules to enable ──────────────────────────────
 
@@ -121,61 +105,53 @@ export default class Interactive extends Command {
     let selectedPlatforms: string[];
     let selectedWebSearch: string[];
 
-    if (editModules) {
-      this.log(chalk.bold.underline("\nStep 1: Select Modules\n"));
+    this.log(chalk.bold.underline("\nStep 1: Select Modules\n"));
 
-      selectedProvider = await select({
-        message: "AI Provider",
-        choices: availableProviders.map((p) => ({ name: p, value: p })),
-        default: (existing.provider as string) ??
-          (availableProviders.includes(DEFAULT_PROVIDER) ? DEFAULT_PROVIDER : availableProviders[0]),
-      });
+    selectedProvider = await select({
+      message: "AI Provider",
+      choices: availableProviders.map((p) => ({ name: p, value: p })),
+      default: (existing.provider as string) ??
+        (availableProviders.includes(DEFAULT_PROVIDER) ? DEFAULT_PROVIDER : availableProviders[0]),
+    });
 
-      selectedPlugins = availablePlugins.length > 0
-        ? await checkbox({
-          message: "Plugins (space to toggle)",
-          choices: availablePlugins.map((p) => ({
-            name: p,
-            value: p,
-            checked: Array.isArray(existing.plugins)
-              ? (existing.plugins as string[]).includes(p)
-              : true,
-          })),
-        })
-        : [];
+    selectedPlugins = availablePlugins.length > 0
+      ? await checkbox({
+        message: "Plugins (space to toggle)",
+        choices: availablePlugins.map((p) => ({
+          name: p,
+          value: p,
+          checked: Array.isArray(existing.plugins)
+            ? (existing.plugins as string[]).includes(p)
+            : true,
+        })),
+      })
+      : [];
 
-      selectedPlatforms = availablePlatforms.length > 0
-        ? await checkbox({
-          message: "Platforms",
-          choices: availablePlatforms.map((p) => ({
-            name: p,
-            value: p,
-            checked: Array.isArray(existing.platforms)
-              ? (existing.platforms as string[]).includes(p)
-              : DEFAULT_PLATFORMS.includes(p),
-          })),
-        })
-        : [];
+    selectedPlatforms = availablePlatforms.length > 0
+      ? await checkbox({
+        message: "Platforms",
+        choices: availablePlatforms.map((p) => ({
+          name: p,
+          value: p,
+          checked: Array.isArray(existing.platforms)
+            ? (existing.platforms as string[]).includes(p)
+            : DEFAULT_PLATFORMS.includes(p),
+        })),
+      })
+      : [];
 
-      selectedWebSearch = availableWebSearch.length > 0
-        ? await checkbox({
-          message: "Web Search Providers",
-          choices: availableWebSearch.map((p) => ({
-            name: p,
-            value: p,
-            checked: Array.isArray((existing.webSearch as Record<string, unknown>)?.providerNames)
-              ? ((existing.webSearch as Record<string, unknown>).providerNames as string[]).includes(p)
-              : DEFAULT_WEB_SEARCH.includes(p),
-          })),
-        })
-        : [];
-    } else {
-      // Keep existing module selections
-      selectedProvider = (existing.provider as string) ?? availableProviders[0] ?? DEFAULT_PROVIDER;
-      selectedPlugins = (existing.plugins as string[]) ?? [];
-      selectedPlatforms = (existing.platforms as string[]) ?? [];
-      selectedWebSearch = ((existing.webSearch as Record<string, unknown>)?.providerNames as string[]) ?? [];
-    }
+    selectedWebSearch = availableWebSearch.length > 0
+      ? await checkbox({
+        message: "Web Search Providers",
+        choices: availableWebSearch.map((p) => ({
+          name: p,
+          value: p,
+          checked: Array.isArray((existing.webSearch as Record<string, unknown>)?.providerNames)
+            ? ((existing.webSearch as Record<string, unknown>).providerNames as string[]).includes(p)
+            : DEFAULT_WEB_SEARCH.includes(p),
+        })),
+      })
+      : [];
 
     // ─── Step 2: Load config schemas from selected modules ───────────────────
 
@@ -209,29 +185,9 @@ export default class Interactive extends Command {
     setNestedValue(config, "webSearch.providerNames", selectedWebSearch);
     setNestedValue(config, "replyMode", (existing.replyMode as string) ?? DEFAULT_REPLY_MODE);
 
-    // Determine which schemas to prompt for vs carry over
-    const schemasToPrompt = allSchemas.filter((schema) => {
-      if (editModules) return true;
-      if (editAll) return true;
-      if (editProviderConfig && providerSchemas.includes(schema)) return true;
-      if (editPlatformConfig && platformSchemas.includes(schema)) return true;
-      if (editWebSearchConfig && webSearchSchemas.includes(schema)) return true;
-      return false;
-    });
-
-    const schemasToCarry = allSchemas.filter((s) => !schemasToPrompt.includes(s));
-
-    // Carry over existing values for schemas we're not editing
-    for (const schema of schemasToCarry) {
-      for (const field of schema.fields) {
-        const existingValue = getNestedValue(existing, field.key);
-        if (existingValue !== undefined) {
-          setNestedValue(config, field.key, existingValue);
-        } else if (field.default !== undefined) {
-          setNestedValue(config, field.key, field.default);
-        }
-      }
-    }
+    // Module selection and module configuration are a single flow: after
+    // choosing modules, immediately prompt all selected module settings.
+    const schemasToPrompt = allSchemas;
 
     // Prompt for schemas the user chose to edit
     if (schemasToPrompt.length > 0) {
@@ -310,12 +266,12 @@ export default class Interactive extends Command {
     });
 
     if (!shouldLaunch) {
-      this.log("\nDone. Run `deno run dev` to launch later.");
+      this.log("\nDone. Run `bun run dev` to launch later.");
       return;
     }
 
     this.log(`\n${chalk.green("Starting Missy...")}\n`);
-    const cmd = "deno run --allow-env --allow-read --allow-write --allow-net bootstrap.ts start";
+    const cmd = "bun bootstrap.ts start";
     execSync(cmd, { stdio: "inherit", cwd: process.cwd() });
   }
 

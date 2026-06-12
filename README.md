@@ -10,6 +10,8 @@ loaded modules.
 - `src/providers/openai`: OpenAI SDK provider. Set `OPENAI_BASE_URL` to use
   OpenAI-compatible providers.
 - `src/providers/mistral`: Mistral TypeScript SDK provider.
+- `src/providers/deepseek`: DeepSeek OpenAI-compatible provider using the
+  OpenAI SDK chat completions API.
 - `src/platforms/discord`: Discord platform adapter using `discord.js`.
 - `src/platforms/matrix`: Matrix platform adapter using `matrix-js-sdk`.
 - `src/plugins/*`: plug-n-play tool plugins. Each plugin lives in its own folder
@@ -51,17 +53,17 @@ deno task bootstrap -- status --platforms=discord --web-search-providers=duckduc
 The Discord platform supports three ways to talk to Missy:
 
 - Mention chat: `hello @Missy` or `@Missy what's up?`
-- Prefix chat and commands: `!M! what's the weather for me?`, `!M! tools`,
-  `!M! plugins`, `!M! memory`, `!M! status`, `!M! help`
+- DM chat and commands: `what's the weather for me?`, `tools`, `plugins`,
+  `memory`, `status`, `help`
+- Server chat and commands: `@Missy what's the weather for me?`,
+  `@Missy status`, `@Missy tools`
 - Slash commands: `/missy`, `/tools`, `/plugins`, `/memory`, `/status`
 
 Discord replies are split automatically using `DISCORD_MAX_MESSAGE_LENGTH` so
 long XML or normal responses do not exceed Discord message limits.
 
-DMs do not require a mention or prefix. Server messages are handled when Missy
-is mentioned, when `!M!` is used, or when the message replies to one of Missy's
-messages. Set `DISCORD_RESPOND_TO_ALL_MESSAGES=true` if you want Missy to see
-and decide on every server message.
+DMs do not require a mention or prefix. Server messages are handled only when
+Missy is directly mentioned.
 
 Optional reaction settings:
 
@@ -77,10 +79,12 @@ Optional reaction settings:
 The Matrix platform lets you talk to Missy through any Matrix client:
 
 - Direct rooms: messages are handled without a mention or prefix.
-- Group rooms: Missy responds when mentioned, when `!M!` is used, or when the
-  message replies to one of Missy's messages.
-- Commands: `!M! help`, `!M! status`, `!M! memory`, `!M! plugins`,
-  `!M! tools`, or `!M! <message>`.
+- Group rooms: Missy responds only when mentioned.
+- Commands in direct rooms: `help`, `status`, `verify`, `verify confirm`,
+  `memory`, `memory all`, `plugins`, `tools`, `session`, `session new [name]`,
+  `context clear`, or any message.
+- Commands in group rooms: mention Missy with `help`, `status`, `memory`,
+  `plugins`, `tools`, `session`, or any message.
 
 Enable Matrix instead of Discord:
 
@@ -89,15 +93,49 @@ PLATFORMS=matrix
 MATRIX_HOMESERVER_URL=https://matrix.org
 MATRIX_ACCESS_TOKEN=your-bot-access-token
 MATRIX_USER_ID=@missy:matrix.org
+MATRIX_RECOVERY_KEY="your Matrix security key"
+MATRIX_PASSWORD="your bot account password"
 ```
+
+### Device Verification
+
+The bot's device shows as unverified by default. There are two ways to fix this:
+
+**Option A: Automatic (recommended) — set `MATRIX_RECOVERY_KEY` and `MATRIX_PASSWORD`**
+The bot cross-signs its device on startup. `MATRIX_RECOVERY_KEY` is your Matrix
+security/recovery key (find it in Element: Settings → Security & Privacy →
+Security Key). `MATRIX_PASSWORD` is needed because the cross-signing key upload
+requires user-interactive authentication.
+
+**Option B: One-time script — run `scripts/cross-sign.ts`**
+Stop the bot, then run (from the project root):
+```bash
+deno run --allow-read --allow-write --allow-net --allow-env --allow-ffi \
+  --allow-scripts=npm:@matrix-org/matrix-sdk-crypto-nodejs@0.5.1 \
+  scripts/cross-sign.ts
+```
+The script reads credentials from environment variables (`.env` or shell env):
+`MATRIX_HOMESERVER_URL`, `MATRIX_USER_ID`, `MATRIX_ACCESS_TOKEN`, `MATRIX_PASSWORD`.
+
+**Note:** Interactive SAS verification (the `verify` command) cannot complete
+through the current matrix-bot-sdk version. Use Option A or B instead. DM the
+bot `verify` to check your configuration status.
 
 Optional settings:
 
 - `MATRIX_ROOM_IDS=!room:server,#alias:server` joins those rooms on startup.
+- `MATRIX_USERNAME` and `MATRIX_PASSWORD` let Missy create a managed Matrix
+  device. When `MATRIX_DEVICE_ID` is not set, Missy generates and persists one
+  in the keystore before login.
+- `MATRIX_DEVICE_ID` should be set for token auth if the homeserver does not
+  report a `device_id` from `/whoami`.
+- Missy persists the Matrix device ID and Rust crypto storage key in the
+  keystore. Keep `KEYSTORE_PATH` stable or the bot will appear as a new
+  unverified device.
+- `MATRIX_RESTORE_KEY_BACKUP=false` skips full key-backup restore on startup.
+- `MATRIX_VERIFY_DEVICE=false` skips the unverified-device warning on startup.
 - `MATRIX_COMMAND_PREFIX=!M!` changes the command prefix.
 - `MATRIX_DISPLAY_NAME=Missy` controls fallback plain-text mention detection.
-- `MATRIX_RESPOND_TO_ALL_MESSAGES=true` lets Missy see every group-room
-  message.
 - `MATRIX_INCLUDE_REPLY_CONTEXT=true` includes replied-to messages when they are
   still in the live timeline.
 - `MATRIX_MAX_MESSAGE_LENGTH=4000` controls reply splitting.
@@ -191,6 +229,22 @@ AI_PROVIDERS=mistral
 MISTRAL_API_KEY=your-key
 MISTRAL_MODEL=mistral-small-latest
 ```
+
+The built-in `deepseek` provider uses DeepSeek's OpenAI-compatible API:
+
+```env
+AI_PROVIDER=deepseek
+AI_PROVIDERS=deepseek
+DEEPSEEK_API_KEY=your-key
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_THINKING=true
+DEEPSEEK_REASONING_EFFORT=high
+```
+
+Supported DeepSeek model options are `deepseek-v4-pro`,
+`deepseek-v4-flash`, `deepseek-chat`, and `deepseek-reasoner`.
+`deepseek-chat` and `deepseek-reasoner` are compatibility aliases scheduled
+for deprecation on July 24, 2026 at 15:59 UTC.
 
 ## Web Search
 

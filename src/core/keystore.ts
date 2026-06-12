@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PluginKeystore } from "./types.ts";
 
@@ -28,13 +29,13 @@ export class FileKeystore implements PluginKeystore {
     }
 
     try {
-      const text = await Deno.readTextFile(this.path);
+      const text = readFileSync(this.path, "utf-8");
       const payload = JSON.parse(text);
       if (isRecord(payload)) {
         this.#data = payload;
       }
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
+      if (!isNotFound(error)) {
         throw error;
       }
     }
@@ -95,7 +96,7 @@ export class FileKeystore implements PluginKeystore {
     }
 
     this.#saveQueue = this.#saveQueue
-      .then(() => this.#writeToDisk())
+      .then(() => { this.#writeToDisk(); })
       .catch(() => {});
     await this.#saveQueue;
   }
@@ -126,9 +127,9 @@ export class FileKeystore implements PluginKeystore {
     return current;
   }
 
-  async #writeToDisk(): Promise<void> {
-    await Deno.mkdir(dirname(this.path), { recursive: true });
-    await Deno.writeTextFile(
+  #writeToDisk(): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    writeFileSync(
       this.path,
       `${JSON.stringify(this.#data, null, 2)}\n`,
     );
@@ -137,4 +138,13 @@ export class FileKeystore implements PluginKeystore {
 
 function isRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code: string }).code === "ENOENT"
+  );
 }
