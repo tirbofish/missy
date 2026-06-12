@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import type { AgentContext, AgentPlatform, ConversationMessage, InboundMessage } from "../../../core/types.ts";
 import { delay, generateSessionId, isRecord, normalizeSessionName, splitByDelimiter } from "../../../core/helpers.ts";
 import type { SessionInstance, SessionMessage, PollerInstance, SessionPlatformConfig } from "./types.ts";
-import { parseSessionConfig, persistConfigMnemonic, persistConfigSessionId, randomHex } from "./config.ts";
+import { parseSessionConfig, persistConfigMnemonic, randomHex } from "./config.ts";
 import { hasTextMention, stripMention } from "./mention.ts";
 import { sessionAttachments } from "./attachments.ts";
 import { splitMessage, parseReactionInput, parseDeleteInput } from "./helpers.ts";
@@ -280,8 +280,6 @@ export class SessionPlatform implements AgentPlatform {
       const id = this.#session!.getSessionID();
       if (id && !id.startsWith("05<detecting")) {
         await keystore.set("sessionId", id);
-        // Also persist to config so the identity is visible and portable
-        await persistConfigSessionId(id, this.#context!.logger);
       }
       return id;
     } catch (error) {

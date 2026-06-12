@@ -68,33 +68,3 @@ export async function persistConfigMnemonic(
     );
   }
 }
-
-/**
- * Persist the bot's Session ID to missy.config.json under session.sessionId.
- * This makes the identity portable when copying the config to another server.
- */
-export async function persistConfigSessionId(
-  sessionId: string,
-  logger: AgentContext["logger"],
-): Promise<void> {
-  const configPath = "missy.config.json";
-  try {
-    let config: Record<string, unknown> = {};
-    try {
-      config = JSON.parse(readFileSync(configPath, "utf-8"));
-    } catch {
-      // file doesn't exist yet — start fresh
-    }
-    const session = isRecord(config["session"])
-      ? config["session"] as Record<string, unknown>
-      : {};
-    session["sessionId"] = sessionId;
-    config["session"] = session;
-    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-    logger.info(`Session ID written to ${configPath} (session.sessionId)`);
-  } catch (error) {
-    logger.warn(
-      `Could not persist Session ID to ${configPath}: ${String(error)}`,
-    );
-  }
-}
