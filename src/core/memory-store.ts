@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { isRecord } from "./helpers.ts";
 
 export interface MemoryRecord {
   key: string;
@@ -145,10 +146,6 @@ export class MemoryStore {
 
     return { users };
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isNotFound(error: unknown): boolean {

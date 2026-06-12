@@ -1,5 +1,6 @@
 import { AgentApp } from "./src/core/app.ts";
 import { type AppConfig, loadConfig } from "./src/core/config.ts";
+import { isRecord } from "./src/core/helpers.ts";
 import { createLogger } from "./src/core/logger.ts";
 import type {
   ConfigField,
@@ -7,9 +8,10 @@ import type {
   PackageBootstrapModule,
   PackageKind,
 } from "./src/core/types.ts";
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 type Command = "start" | "status" | "help";
 
@@ -120,6 +122,10 @@ const ROOT_CONFIG_SCHEMA: ConfigSchema = {
 };
 
 if (import.meta.main) {
+  // Pre-flight: install npm dependencies for enabled packages before
+  // we import their bootstrap.ts files (which may require those deps).
+  await installPackageDependencies("missy.config.json", "src");
+
   const packageBootstraps = await discoverPackageBootstraps("src");
   const schemas = [
     ROOT_CONFIG_SCHEMA,
@@ -406,6 +412,105 @@ async function collectPackageBootstraps(
 
     await collectPackageBootstraps(p, bootstraps);
   }
+}
+
+/**
+ * Read enabled platform/provider names from missy.config.json, scan their
+ * package.json files for npm dependencies, and install any that are missing
+ * from node_modules.  This keeps the root package.json lean — only the
+ * packages needed by currently-enabled modules are installed.
+ */
+async function installPackageDependencies(
+  configPath: string,
+  srcDir: string,
+): Promise<void> {
+  // 1. Read enabled names from config
+  let enabledNames: string[] = [];
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+    const platforms = asStringArray(raw["platforms"]);
+    const providers = asStringArray(raw["providers"]);
+    const plugins = asStringArray(raw["plugins"]);
+    const webSearch = asStringArray(
+      isRecord(raw["webSearch"]) ? raw["webSearch"]["providerNames"] : undefined,
+    );
+    enabledNames = [...platforms, ...providers, ...plugins, ...webSearch];
+  } catch {
+    // Config may not exist yet (e.g. first-time setup); skip install.
+    return;
+  }
+
+  if (enabledNames.length === 0) return;
+
+  // 2. Walk src/ subdirectories to find package.json for each enabled name
+  const categories = ["platforms", "providers", "plugins", "web-search-providers"];
+  const neededPackages = new Set<string>();
+
+  for (const category of categories) {
+    const catDir = join(srcDir, category);
+    let entries: { name: string; isDirectory: () => boolean }[];
+    try {
+      entries = readdirSync(catDir, { withFileTypes: true }) as unknown as typeof entries;
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!enabledNames.includes(entry.name)) continue;
+
+      const pkgJsonPath = join(catDir, entry.name, "package.json");
+      let pkgJson: Record<string, unknown>;
+      try {
+        pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
+      } catch {
+        continue;
+      }
+      const deps = pkgJson["dependencies"];
+      if (!isRecord(deps)) continue;
+      for (const dep of Object.keys(deps)) {
+        neededPackages.add(dep);
+      }
+    }
+  }
+
+  if (neededPackages.size === 0) return;
+
+  // 3. Check which packages are missing from node_modules
+  const missing: string[] = [];
+  for (const pkg of neededPackages) {
+    // Scoped packages: @scope/name → node_modules/@scope/name
+    const modPath = pkg.startsWith("@")
+      ? join("node_modules", pkg.replace("/", sep))
+      : join("node_modules", pkg);
+    if (!existsSync(modPath)) {
+      missing.push(pkg);
+    }
+  }
+
+  if (missing.length === 0) return;
+
+  // 4. Install missing packages
+  console.log(
+    `\x1b[36mInstalling ${missing.length} missing package(s) for enabled modules…\x1b[0m\n` +
+    missing.map((p) => `  + ${p}`).join("\n"),
+  );
+
+  const result = spawnSync("bun", ["add", ...missing], {
+    stdio: "inherit",
+    cwd: process.cwd(),
+  });
+
+  if (result.status !== 0) {
+    console.error(
+      `\x1b[31mFailed to install packages: ${missing.join(", ")}\x1b[0m`,
+    );
+  }
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v) => typeof v === "string") as string[];
+  if (typeof value === "string") return value.split(",").map((s) => s.trim()).filter(Boolean);
+  return [];
 }
 
 function buildFlagEnv(schemas: ConfigSchema[]): Record<string, string> {

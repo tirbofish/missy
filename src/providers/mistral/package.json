@@ -6,5 +6,8 @@
   "exports": {
     ".": "./src/mod.ts",
     "./bootstrap": "./bootstrap.ts"
+  },
+  "dependencies": {
+    "@mistralai/mistralai": "^2.2.0"
   }
 }

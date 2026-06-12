@@ -5,6 +5,7 @@ import type {
   WebSearchProvider,
   WebSearchProviderResult,
 } from "../../core/types.ts";
+import { isRecord } from "../../core/helpers.ts";
 
 interface WebSearchInput {
   query?: unknown;
@@ -188,10 +189,6 @@ function clampMaxResults(value: number): number {
   }
 
   return Math.max(1, Math.min(10, Math.floor(value)));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 export default module;

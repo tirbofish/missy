@@ -6,6 +6,7 @@ import type {
   WebSearchProviderModule,
   WebSearchResult,
 } from "../../core/types.ts";
+import { isRecord } from "../../core/helpers.ts";
 
 class BraveSearchProvider implements WebSearchProvider {
   readonly name = "brave";
@@ -132,10 +133,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== ""
     ? value.trim()
     : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function normalizeLlmContext(payload: unknown): LlmContextResult {

@@ -12,6 +12,7 @@ import type {
   ProviderModule,
   WebSearchProviderModule,
 } from "./types.ts";
+import { isRecord } from "./helpers.ts";
 
 export async function discoverPlugins(
   pluginsDir: string,
@@ -303,10 +304,6 @@ function inMemoryKeystore(
       return inMemoryKeystore(data, [...prefix, cleanName]);
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validatePluginModule(folderName: string, module: PluginModule): void {

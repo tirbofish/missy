@@ -1,4 +1,4 @@
-import type { PlatformService } from "../../core/types.ts";
+import type { PlatformService } from "../../../core/types.ts";
 
 /** Shared interface for Discord operations. Plugins depend on this, not on discord.js. */
 export interface DiscordService extends PlatformService {

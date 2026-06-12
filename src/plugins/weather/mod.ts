@@ -1,4 +1,5 @@
 import type { PluginModule } from "../../core/types.ts";
+import { isRecord } from "../../core/helpers.ts";
 
 interface WeatherInput {
   location?: unknown;
@@ -89,10 +90,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== ""
     ? value.trim()
     : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 export default module;

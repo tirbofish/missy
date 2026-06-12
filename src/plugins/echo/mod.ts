@@ -1,4 +1,5 @@
 import type { PluginModule } from "../../core/types.ts";
+import { isRecord } from "../../core/helpers.ts";
 
 const module: PluginModule = {
   metadata: {
@@ -27,9 +28,5 @@ const module: PluginModule = {
     });
   },
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 export default module;
